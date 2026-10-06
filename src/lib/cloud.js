@@ -31,20 +31,15 @@ if (cloudEnabled) {
 export { auth, db };
 export { signInWithPopup, signInWithRedirect, getRedirectResult, signOut, onAuthStateChanged, doc, onSnapshot, setDoc, serverTimestamp };
 
-const isMobile = () => /Mobi|Android|iPhone|iPad|Mobile/i.test(navigator.userAgent);
-
 export async function loginGoogle() {
   if (!cloudEnabled) throw new Error('Firebase belum dikonfigurasi (isi .env dulu)');
-  // HP: popup sering diblokir / cuma refresh → pakai redirect
-  if (isMobile()) {
-    await signInWithRedirect(auth, provider);
-    return;
-  }
+  // Coba popup dulu di semua perangkat (lebih tahan terhadap
+  // error "missing initial state" yang sering muncul di redirect + Safari/iOS).
+  // Redirect hanya sebagai fallback kalau popup diblokir.
   try {
     return await signInWithPopup(auth, provider);
   } catch (e) {
-    // fallback: kalau popup diblokir, pakai redirect
-    if (e?.code === 'auth/popup-blocked' || e?.code === 'auth/popup-closed-by-user' || e?.code === 'auth/cancelled-popup-request') {
+    if (e?.code === 'auth/popup-blocked' || e?.code === 'auth/cancelled-popup-request') {
       await signInWithRedirect(auth, provider);
       return;
     }
