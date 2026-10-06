@@ -1,0 +1,10 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Tiap user hanya bisa baca/tulis dokumennya sendiri: users/{uid}
+    // Login Google di laptop & HP pakai akun yang SAMA -> data sama.
+    match /users/{uid} {
+      allow read, write: if request.auth != null && request.auth.uid == uid;
+    }
+  }
+}
