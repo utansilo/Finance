@@ -17,7 +17,7 @@ export function useCloudSync(slices) {
   const pushing = useRef(false);
   const firstLoad = useRef(true);
 
-  const { transactions, budgets, accounts, plan, goals, emergency, debts } = slices;
+  const { transactions, budgets, accounts, plan, goals, emergency, debts, petty } = slices;
 
   // 1. dengarkan auth + selesaikan hasil redirect (khusus HP)
   useEffect(() => {
@@ -75,6 +75,7 @@ export function useCloudSync(slices) {
           if (d.goals) slices.setGoals(d.goals);
           if (d.emergency) slices.setEmg(d.emergency);
           if (d.debts) slices.setDebts(d.debts);
+          if (d.petty && slices.setPetty) slices.setPetty(d.petty);
           setLastSync(new Date());
           setCloudStatus('tersambung ✓ sinkron');
         } finally {
@@ -97,7 +98,7 @@ export function useCloudSync(slices) {
         userDoc(user.uid),
         {
           transactions, budgets, accounts, plan, goals,
-          emergency, debts,
+          emergency, debts, petty,
           updatedAt: serverTimestamp(),
           updatedBy: user.email || user.uid,
         },
@@ -122,7 +123,7 @@ export function useCloudSync(slices) {
     const t = setTimeout(pushNow, 1200);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [transactions, budgets, accounts, plan, goals, emergency, debts, user]);
+  }, [transactions, budgets, accounts, plan, goals, emergency, debts, petty, user]);
 
   return { user, cloudStatus, lastSync, authError, loginGoogle, logoutGoogle, cloudEnabled, pushNow };
 }

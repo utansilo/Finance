@@ -9,6 +9,7 @@ import {
   rekomendasiAlokasi, targetDarurat, STATUS_DARURAT,
 } from './lib/finance.js';
 import { useCloudSync } from './lib/useCloudSync.js';
+import { compressImageFile, rekapPetty, groupByTanggal, exportPettyDocx, periodeLabelPetty } from './lib/petty.js';
 
 const LS_TX = 'duitku.transactions.v1';
 const LS_BD = 'duitku.budgets.v1';
@@ -17,7 +18,9 @@ const LS_PLAN = 'duitku.plan.v1';
 const LS_GOALS = 'duitku.goals.v1';
 const LS_EMG = 'duitku.emergency.v1';
 const LS_DEBT = 'duitku.debts.v1';
-const COLORS = ['#6366f1', '#22c55e', '#f59e0b', '#ef4444', '#06b6d4', '#a855f7', '#ec4899', '#84cc16', '#f97316'];
+const LS_PETTY = 'duitku.petty.v1';
+const LS_THEME = 'duitku.theme.v1';
+const COLORS = ['#123C35', '#53D6A0', '#172B4D', '#0E7A3D', '#D97706', '#0EA5A0', '#7FB69E', '#3B5A8F', '#C81E1E'];
 
 function load(key, fallback) {
   try {
@@ -42,6 +45,20 @@ export default function App() {
     { id: 'd1', tipe: 'piutang', nama: 'Andi', jumlah: 1500000, terbayar: 500000, tanggal: new Date().toISOString().slice(0, 10), jatuhTempo: '', catatan: 'Pinjam untuk servis motor' },
     { id: 'd2', tipe: 'utang', nama: 'Kartu Kredit', jumlah: 2000000, terbayar: 0, tanggal: new Date().toISOString().slice(0, 10), jatuhTempo: '', catatan: 'Cicilan HP' },
   ]));
+  const [petty, setPetty] = useState(() => load(LS_PETTY, []));
+  const [theme, setTheme] = useState(() => {
+    try {
+      const saved = localStorage.getItem(LS_THEME);
+      if (saved === 'light' || saved === 'dark') return saved;
+      if (window.matchMedia?.('(prefers-color-scheme: dark)').matches) return 'dark';
+      return 'light';
+    } catch { return 'light'; }
+  });
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    try { localStorage.setItem(LS_THEME, theme); } catch { /* abaikan */ }
+  }, [theme]);
   const [bulan, setBulan] = useState(bulanKey());
   const [filterTipe, setFilterTipe] = useState('semua');
   const [cari, setCari] = useState('');
@@ -68,18 +85,21 @@ export default function App() {
   useEffect(() => { localStorage.setItem(LS_GOALS, JSON.stringify(goals)); }, [goals]);
   useEffect(() => { localStorage.setItem(LS_EMG, JSON.stringify(emg)); }, [emg]);
   useEffect(() => { localStorage.setItem(LS_DEBT, JSON.stringify(debts)); }, [debts]);
+  useEffect(() => { if (petty !== null) localStorage.setItem(LS_PETTY, JSON.stringify(petty)); }, [petty]);
 
   // ---- cloud sync (laptop ↔ HP data sama) ----
   const sync = useCloudSync({
-    transactions, budgets, accounts, plan, goals, emergency: emg, debts,
-    setTransactions, setBudgets, setAccounts, setPlan, setGoals, setEmg, setDebts,
+    transactions, budgets, accounts, plan, goals, emergency: emg, debts, petty,
+    setTransactions, setBudgets, setAccounts, setPlan, setGoals, setEmg, setDebts, setPetty,
   });
-  const NAV = [['dashboard', '📊', 'Home'], ['transaksi', '🧾', 'Catat'], ['akun', '💳', 'Kas'], ['utang', '🤝', 'Utang'], ['budget', '🎯', 'Budget'], ['rencana', '🏦', 'Rencana'], ['laporan', '📁', 'File']];
+  const NAV = [['dashboard', '📊', 'Home'], ['transaksi', '🧾', 'Catat'], ['akun', '💳', 'Kas'], ['petty', '🏢', 'Petty'], ['utang', '🤝', 'Utang'], ['budget', '🎯', 'Budget'], ['rencana', '🏦', 'Rencana'], ['laporan', '📁', 'File']];
 
   const tx = transactions ?? [];
   const bd = budgets ?? [];
-  const acc = useMemo(() => (accounts ?? []).map((a) => ({ titipan: false, ...a })), [accounts]);
+  const acc = useMemo(() => (accounts ?? []).map((a) => ({ titipan: false, pemilik: '', ...a })), [accounts]);
   const akunMap = useMemo(() => Object.fromEntries(acc.map((a) => [a.id, a.nama])), [acc]);
+  const akunLabel = (a) => (a?.pemilik ? `${a.nama} — ${a.pemilik}` : (a?.nama || 'Tanpa Akun'));
+  const daftarPemilik = useMemo(() => [...new Set(acc.filter((a) => a.titipan && (a.pemilik || '').trim()).map((a) => a.pemilik.trim()))].sort(), [acc]);
   const saldoMap = useMemo(() => hitungSaldoAkun(acc, tx), [acc, tx]);
   const accPribadi = useMemo(() => acc.filter((a) => !a.titipan), [acc]);
   const accTitipan = useMemo(() => acc.filter((a) => a.titipan), [acc]);
@@ -101,7 +121,7 @@ export default function App() {
   const [form, setForm] = useState({ tipe: 'pengeluaran', kategori: 'Makan & Minum', jumlah: '', tanggal: new Date().toISOString().slice(0, 10), catatan: '', akunId: '', akunTujuan: '' });
   const [budgetForm, setBudgetForm] = useState({ kategori: 'Makan & Minum', limit: '' });
   const [goalForm, setGoalForm] = useState({ nama: '', target: '', terkumpul: '', deadline: '' });
-  const [akunForm, setAkunForm] = useState({ nama: '', jenis: 'bank', saldoAwal: '', titipan: false });
+  const [akunForm, setAkunForm] = useState({ nama: '', jenis: 'bank', saldoAwal: '', titipan: false, pemilik: '' });
   const [editAkunId, setEditAkunId] = useState(null);
   const [akunSesuai, setAkunSesuai] = useState(null); // { id, nominal }
   const [debtForm, setDebtForm] = useState({ tipe: 'piutang', nama: '', jumlah: '', tanggal: new Date().toISOString().slice(0, 10), jatuhTempo: '', catatan: '', akunId: '' });
@@ -111,6 +131,139 @@ export default function App() {
   const [debtActForm, setDebtActForm] = useState({ jumlah: '', akunId: '', tanggal: new Date().toISOString().slice(0, 10), catatan: '' });
   const [filterAkun, setFilterAkun] = useState('semua');
   const [transferForm, setTransferForm] = useState({ dari: '', ke: '', jumlah: '', tanggal: new Date().toISOString().slice(0, 10), catatan: '' });
+
+  // ---- petty cash (terintegrasi akun titipan) ----
+  // p = { id, tanggal, keterangan, jumlah, tipe: 'expense'|'advance', akunId, tanpaNota, photos: [], txId }
+  const pettyList = petty ?? [];
+  const [pettyForm, setPettyForm] = useState({ tipe: 'expense', tanggal: new Date().toISOString().slice(0, 10), keterangan: '', jumlah: '', akunId: '', tanpaNota: false });
+  const [pettyPhotos, setPettyPhotos] = useState([]); // dataURL preview sebelum simpan
+  const [pettyBusy, setPettyBusy] = useState(false);
+  const [editPettyId, setEditPettyId] = useState(null);
+  const [pettyAkun, setPettyAkun] = useState(''); // filter akun rekap
+  const [pettyPemilik, setPettyPemilik] = useState(''); // filter pemilik / orang
+  const [pettyMode, setPettyMode] = useState('bulan'); // 'bulan' | 'rentang'
+  const [pettyDari, setPettyDari] = useState(new Date().toISOString().slice(0, 10));
+  const [pettySampai, setPettySampai] = useState(new Date().toISOString().slice(0, 10));
+  const [pettyCari, setPettyCari] = useState('');
+  const [pettyLightbox, setPettyLightbox] = useState(null); // dataURL foto diperbesar
+  const [pettyTarik, setPettyTarik] = useState({ dari: '', ke: '', jumlah: '', tanggal: new Date().toISOString().slice(0, 10) });
+
+  // Form petty default ke filter akun, kalau "semua" pakai titipan pertama.
+  // Filter rekap: pemilik + akun. '' = semua.
+  // Aturan: kalau pilih pemilik, akun otomatis dibatasi ke akun milik orang itu.
+  const accTitipanFiltered = pettyPemilik ? accTitipan.filter((a) => (a.pemilik || '').trim() === pettyPemilik) : accTitipan;
+  const pettyFormAkunDefault = pettyForm.akunId || pettyAkun || accTitipanFiltered[0]?.id || accTitipan[0]?.id || '';
+  const pettyFiltered = useMemo(() => {
+    let list = pettyList.filter((p) => accTitipan.some((a) => a.id === p.akunId) || !p.akunId);
+    if (pettyPemilik) {
+      const ids = new Set(accTitipan.filter((a) => (a.pemilik || '').trim() === pettyPemilik).map((a) => a.id));
+      list = list.filter((p) => ids.has(p.akunId));
+    }
+    if (pettyAkun) list = list.filter((p) => p.akunId === pettyAkun);
+    if (pettyMode === 'bulan') list = list.filter((p) => (p.tanggal || '').startsWith(bulan));
+    else if (pettyDari && pettySampai) list = list.filter((p) => (p.tanggal || '') >= pettyDari && (p.tanggal || '') <= pettySampai);
+    if (pettyCari) list = list.filter((p) => ((p.keterangan || '') + (p.tanggal || '')).toLowerCase().includes(pettyCari.toLowerCase()));
+    return [...list].sort((a, b) => (b.tanggal || '').localeCompare(a.tanggal || ''));
+  }, [pettyList, pettyPemilik, pettyAkun, accTitipan, pettyMode, bulan, pettyDari, pettySampai, pettyCari]);
+  const pettyRekap = useMemo(() => rekapPetty(pettyFiltered), [pettyFiltered]);
+  const pettyGroups = useMemo(() => groupByTanggal(pettyFiltered), [pettyFiltered]);
+  const pettyPeriodeLabel = pettyMode === 'bulan' ? namaBulan(bulan) : `${pettyDari} s/d ${pettySampai}`;
+  const pettyAkunScope = pettyAkun ? accTitipan.filter((a) => a.id === pettyAkun) : accTitipanFiltered;
+  const pettySaldoTampil = pettyAkunScope.reduce((s, a) => s + (saldoMap[a.id] || 0), 0);
+  const pettyAkunNamaTampil = `${pettyPemilik ? `Pemilik: ${pettyPemilik}` : 'Semua pemilik'} • ${pettyAkun ? akunLabel(acc.find((a) => a.id === pettyAkun)) : (pettyAkunScope.length > 1 ? `Semua titipan (${pettyAkunScope.length} akun)` : akunLabel(pettyAkunScope[0]))}`;
+
+  // Tarik tunai / pindah kas antar akun titipan (misal BCA titipan → Tunai titipan).
+  // Ini transfer biasa, TIDAK dihitung sebagai pengeluaran — uangnya cuma pindah tempat.
+  const simpanTarikTunai = (e) => {
+    e.preventDefault();
+    const dari = pettyTarik.dari || accTitipan[0]?.id || '';
+    const ke = pettyTarik.ke || '';
+    const jumlah = Number(pettyTarik.jumlah);
+    if (!dari || !ke || dari === ke) return alert('Pilih akun asal & tujuan yang berbeda');
+    if (!jumlah || jumlah <= 0) return alert('Nominal tarik tunai harus > 0');
+    const saldoDari = saldoMap[dari] || 0;
+    if (jumlah > saldoDari && !confirm(`Saldo ${akunMap[dari]} tinggal ${rupiah(saldoDari)}, mau tarik ${rupiah(jumlah)} tetap?`)) return;
+    setTransactions([{ id: uid(), tipe: 'transfer', kategori: 'Transfer', jumlah, tanggal: pettyTarik.tanggal, akunId: dari, akunTujuan: ke, catatan: `[Petty] Tarik tunai ${akunMap[dari]} → ${akunMap[ke]}` }, ...tx]);
+    setPettyTarik({ dari: '', ke: '', jumlah: '', tanggal: new Date().toISOString().slice(0, 10) });
+  };
+
+  const onPettyFoto = async (e) => {
+    const files = [...(e.target.files || [])].slice(0, 3 - pettyPhotos.length);
+    if (files.length === 0) return;
+    setPettyBusy(true);
+    try {
+      const compressed = [];
+      for (const f of files) compressed.push(await compressImageFile(f));
+      setPettyPhotos((prev) => [...prev, ...compressed].slice(0, 3));
+    } catch { alert('Gagal membaca foto. Coba foto lain.'); }
+    finally { setPettyBusy(false); e.target.value = ''; }
+  };
+
+  const resetPettyForm = () => {
+    setPettyForm({ tipe: 'expense', tanggal: new Date().toISOString().slice(0, 10), keterangan: '', jumlah: '', akunId: pettyAkun || accTitipan[0]?.id || '', tanpaNota: false });
+    setPettyPhotos([]);
+    setEditPettyId(null);
+  };
+
+  // Simpan petty + catat otomatis ke transaksi akun titipan (pengeluaran / pemasukan advance)
+  const simpanPetty = (e) => {
+    e.preventDefault();
+    const akunId = pettyForm.akunId || pettyAkun || accTitipan[0]?.id || '';
+    if (!akunId) return alert('Buat / pilih akun titipan dulu di tab Akun (centang 🏢 titipan)');
+    if (!pettyForm.tanggal || !pettyForm.jumlah || Number(pettyForm.jumlah) <= 0) return alert('Tanggal & nominal (>0) wajib diisi');
+    if (!pettyForm.keterangan.trim()) return alert('Keterangan wajib diisi (cth: beli ATK / amplop pak RT)');
+    const isAdvance = pettyForm.tipe === 'advance';
+    const jumlah = Number(pettyForm.jumlah);
+    if (editPettyId) {
+      const lama = pettyList.find((p) => p.id === editPettyId);
+      setPetty(pettyList.map((p) => (p.id === editPettyId
+        ? { ...p, tanggal: pettyForm.tanggal, keterangan: pettyForm.keterangan.trim(), jumlah, tipe: pettyForm.tipe, akunId, tanpaNota: !!pettyForm.tanpaNota && !isAdvance, photos: pettyPhotos }
+        : p)));
+      // sinkronkan transaksi titipan yang tertaut
+      if (lama?.txId) {
+        setTransactions(tx.map((t) => (t.id === lama.txId
+          ? { ...t, tipe: isAdvance ? 'pemasukan' : 'pengeluaran', jumlah, tanggal: pettyForm.tanggal, akunId, kategori: 'Lainnya', catatan: `${isAdvance ? '[Petty] Cash advance' : '[Petty] ' + pettyForm.keterangan.trim()}${!isAdvance && pettyForm.tanpaNota ? ' (tanpa nota)' : ''}` }
+          : t)));
+      }
+      resetPettyForm();
+      return;
+    }
+    const id = uid();
+    const txId = uid();
+    const entry = { id, tanggal: pettyForm.tanggal, keterangan: pettyForm.keterangan.trim(), jumlah, tipe: pettyForm.tipe, akunId, tanpaNota: !!pettyForm.tanpaNota && !isAdvance, photos: pettyPhotos, txId };
+    setPetty([entry, ...pettyList]);
+    setTransactions([{
+      id: txId, tipe: isAdvance ? 'pemasukan' : 'pengeluaran', kategori: 'Lainnya', jumlah,
+      tanggal: pettyForm.tanggal, akunId, pettyId: id,
+      catatan: `${isAdvance ? '[Petty] Cash advance — ' + pettyForm.keterangan.trim() : '[Petty] ' + pettyForm.keterangan.trim()}${!isAdvance && pettyForm.tanpaNota ? ' (tanpa nota)' : ''}`,
+    }, ...tx]);
+    resetPettyForm();
+  };
+
+  const mulaiEditPetty = (p) => {
+    setEditPettyId(p.id);
+    setPettyForm({ tipe: p.tipe || 'expense', tanggal: p.tanggal, keterangan: p.keterangan || '', jumlah: p.jumlah, akunId: p.akunId, tanpaNota: !!p.tanpaNota });
+    setPettyPhotos(p.photos || []);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const hapusPetty = (p) => {
+    if (!confirm(`Hapus "${p.keterangan}" (${rupiah(p.jumlah)})? Transaksi titipan tertaut ikut terhapus.`)) return;
+    setPetty(pettyList.filter((x) => x.id !== p.id));
+    if (p.txId) setTransactions(tx.filter((t) => t.id !== p.txId));
+  };
+
+  const downloadPettyDocx = async () => {
+    if (pettyFiltered.length === 0) return alert('Tidak ada data petty cash pada periode ini');
+    try {
+      await exportPettyDocx({
+        items: pettyFiltered,
+        akunNama: pettyAkunNamaTampil,
+        periodeLabel: periodeLabelPetty(pettyMode, bulan, pettyDari, pettySampai),
+        saldoAkun: pettySaldoTampil,
+      });
+    } catch { alert('Gagal membuat DOCX. Coba lagi (kemungkinan foto terlalu besar).'); }
+  };
 
   useEffect(() => {
     setForm((f) => ({
@@ -271,25 +424,26 @@ export default function App() {
 
   // ---- CRUD akun ----
   const resetAkunForm = () => {
-    setAkunForm({ nama: '', jenis: 'bank', saldoAwal: '', titipan: false });
+    setAkunForm({ nama: '', jenis: 'bank', saldoAwal: '', titipan: false, pemilik: '' });
     setEditAkunId(null);
   };
   const simpanAkun = (e) => {
     e.preventDefault();
     if (!akunForm.nama.trim()) return alert('Nama akun wajib diisi');
+    if (akunForm.titipan && !akunForm.pemilik.trim()) return alert('Untuk akun titipan, isi pemiliknya (cth: Orang 1 / Pak A) supaya tidak kecampur antar orang');
     if (editAkunId) {
       setAccounts(acc.map((a) => (a.id === editAkunId
-        ? { ...a, nama: akunForm.nama.trim(), jenis: akunForm.jenis, saldoAwal: Number(akunForm.saldoAwal) || 0, titipan: !!akunForm.titipan }
+        ? { ...a, nama: akunForm.nama.trim(), jenis: akunForm.jenis, saldoAwal: Number(akunForm.saldoAwal) || 0, titipan: !!akunForm.titipan, pemilik: akunForm.pemilik.trim() }
         : a)));
       resetAkunForm();
       return;
     }
-    setAccounts([...acc, { id: uid(), nama: akunForm.nama.trim(), jenis: akunForm.jenis, saldoAwal: Number(akunForm.saldoAwal) || 0, titipan: !!akunForm.titipan }]);
+    setAccounts([...acc, { id: uid(), nama: akunForm.nama.trim(), jenis: akunForm.jenis, saldoAwal: Number(akunForm.saldoAwal) || 0, titipan: !!akunForm.titipan, pemilik: akunForm.pemilik.trim() }]);
     resetAkunForm();
   };
   const mulaiEditAkun = (a) => {
     setEditAkunId(a.id);
-    setAkunForm({ nama: a.nama, jenis: a.jenis || 'bank', saldoAwal: a.saldoAwal ?? 0, titipan: !!a.titipan });
+    setAkunForm({ nama: a.nama, jenis: a.jenis || 'bank', saldoAwal: a.saldoAwal ?? 0, titipan: !!a.titipan, pemilik: a.pemilik || '' });
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
   // sesuaikan saldo akhir ke nominal sebenarnya (misal cek m-banking beda) → buat transaksi koreksi otomatis
@@ -441,7 +595,7 @@ export default function App() {
     .filter((t) => ((t.catatan || '') + (t.kategori || '') + (akunMap[t.akunId] || '')).toLowerCase().includes(cari.toLowerCase()))
     .sort((a, b) => b.tanggal.localeCompare(a.tanggal));
 
-  const exportJSON = () => download(`keuangan-${bulan}.json`, JSON.stringify({ transactions: tx, budgets: bd, accounts: acc, debts: debtList, plan, goals, emergency: emg }, null, 2));
+  const exportJSON = () => download(`keuangan-${bulan}.json`, JSON.stringify({ transactions: tx, budgets: bd, accounts: acc, debts: debtList, petty: petty ?? [], plan, goals, emergency: emg }, null, 2));
   const exportCSV = () => download(`keuangan-${bulan}.csv`, toCSV(tx, akunMap), 'text/csv');
   const importJSON = (e) => {
     const f = e.target.files?.[0];
@@ -457,6 +611,7 @@ export default function App() {
         if (d.goals) setGoals(d.goals);
         if (d.emergency) setEmg(d.emergency);
         if (d.debts) setDebts(d.debts);
+        if (d.petty) setPetty(d.petty);
         alert('Import berhasil!');
       } catch { alert('File tidak valid'); }
     };
@@ -468,15 +623,20 @@ export default function App() {
     return [...set].filter(Boolean).sort().reverse();
   }, [tx, bd, bulan]);
 
-  const judul = { dashboard: 'Ringkasan Keuangan', transaksi: 'Catat Transaksi', budget: 'Budgeting Bulanan', akun: 'Akun & Kas', utang: 'Utang, Piutang & Titipan', rencana: 'Rencana, Tabungan & Dana Darurat', laporan: 'Laporan & Export' }[tab];
+  const judul = { dashboard: 'Ringkasan Keuangan', transaksi: 'Catat Transaksi', budget: 'Budgeting Bulanan', akun: 'Akun & Kas', petty: 'Petty Cash & Laporan', utang: 'Utang, Piutang & Titipan', rencana: 'Rencana, Tabungan & Dana Darurat', laporan: 'Laporan & Export' }[tab];
 
   if (transactions === null || accounts === null) return <div className="loading">Memuat...</div>;
 
   return (
     <div className="app">
       <aside className="sidebar">
-        <div className="logo">💰 DuitKu</div>
-        <p className="tagline">Atur uang, stop boros</p>
+        <div className="logo-row">
+          <img className="brand-logo" src="logo-sidebar.png" alt="Logo Flowra" />
+          <div className="brand-text">
+            <span className="brand-name">Flowra</span>
+            <span className="brand-tagline">Every Flow, Accounted For</span>
+          </div>
+        </div>
         <div className={`sync-box ${sync.user ? 'on' : ''}`}>
           {sync.cloudEnabled ? (
             sync.user ? (
@@ -504,11 +664,17 @@ export default function App() {
           )}
         </div>
         <nav>
-          {[['dashboard', '📊 Dashboard'], ['transaksi', '🧾 Transaksi'], ['akun', '💳 Akun & Kas'], ['utang', '🤝 Utang & Titipan'], ['budget', '🎯 Budgeting'], ['rencana', '🏦 Rencana & Tabungan'], ['laporan', '📁 Laporan & File']].map(([k, label]) => (
+          {[['dashboard', '📊 Dashboard'], ['transaksi', '🧾 Transaksi'], ['akun', '💳 Akun & Kas'], ['petty', '🏢 Petty Cash'], ['utang', '🤝 Utang & Titipan'], ['budget', '🎯 Budgeting'], ['rencana', '🏦 Rencana & Tabungan'], ['laporan', '📁 Laporan & File']].map(([k, label]) => (
             <button key={k} className={tab === k ? 'active' : ''} onClick={() => setTab(k)}>{label}</button>
           ))}
         </nav>
         <div className="side-foot">
+          <label>Tampilan</label>
+          <div className="theme-row">
+            <button className="theme-pill" onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')} title={theme === 'dark' ? 'Ganti ke mode terang' : 'Ganti ke mode gelap'}>
+              {theme === 'dark' ? '☀️ Terang' : '🌙 Gelap'}
+            </button>
+          </div>
           <label>Periode</label>
           <select value={bulan} onChange={(e) => setBulan(e.target.value)}>
             {bulanOptions.map((b) => <option key={b} value={b}>{namaBulan(b)}</option>)}
@@ -531,6 +697,7 @@ export default function App() {
             <p className="muted">{namaBulan(bulan)} • {txBulan.length} transaksi</p>
           </div>
           <div className="top-actions">
+            <button className="btn ghost" onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')} title={theme === 'dark' ? 'Ganti ke mode terang' : 'Ganti ke mode gelap'}>{theme === 'dark' ? '☀️ Terang' : '🌙 Gelap'}</button>
             <button className="btn ghost" onClick={exportCSV}>⬇ CSV</button>
             <button className="btn ghost" onClick={exportJSON}>⬇ JSON</button>
             <button className="btn primary" onClick={() => { setShowForm(true); setEditId(null); }}>+ Tambah</button>
@@ -596,9 +763,9 @@ export default function App() {
                     <YAxis tickFormatter={(v) => (v >= 1000000 ? `${v / 1000000}jt` : `${v / 1000}rb`)} />
                     <Tooltip formatter={(v) => rupiah(v)} />
                     <Legend />
-                    <Bar dataKey="Pemasukan" fill="#22c55e" />
-                    <Bar dataKey="Pengeluaran" fill="#ef4444" />
-                    <Bar dataKey="Investasi" fill="#6366f1" />
+                    <Bar dataKey="Pemasukan" fill="#0E7A3D" radius={[6, 6, 0, 0]} />
+                    <Bar dataKey="Pengeluaran" fill="#C81E1E" radius={[6, 6, 0, 0]} />
+                    <Bar dataKey="Investasi" fill="#172B4D" radius={[6, 6, 0, 0]} />
                   </BarChart>
                 </ResponsiveContainer>
               </div>
@@ -653,10 +820,14 @@ export default function App() {
                 </select>
                 <input type="number" placeholder="Saldo awal (Rp)" value={akunForm.saldoAwal} onChange={(e) => setAkunForm({ ...akunForm, saldoAwal: e.target.value })} title="Saldo awal — bisa diubah kapan aja via Edit" />
                 <label className="check"><input type="checkbox" checked={!!akunForm.titipan} onChange={(e) => setAkunForm({ ...akunForm, titipan: e.target.checked })} /> 🏢 Uang titipan (petty cash kantor, bukan milikku)</label>
+                {akunForm.titipan && (
+                  <input placeholder="Pemilik (cth: Orang 1 / Pak A) — wajib" value={akunForm.pemilik} onChange={(e) => setAkunForm({ ...akunForm, pemilik: e.target.value })} list="pemilik-list" />
+                )}
                 <button className="btn primary" type="submit">{editAkunId ? 'Simpan Perubahan' : 'Simpan Akun'}</button>
                 {editAkunId && <button className="btn ghost" type="button" onClick={resetAkunForm}>Batal</button>}
               </form>
-              <small className="muted">Centang <b>titipan</b> untuk petty cash kantor — saldonya TIDAK dihitung ke kas pribadimu, jadi tidak kecampur. Saldo berjalan = saldo awal + semua transaksi. Mau benerin saldo akhir (misal beda sama m-banking)? Pakai tombol <b>🎯 Sesuaikan</b> di tiap kartu.</small>
+              <datalist id="pemilik-list">{daftarPemilik.map((p) => <option key={p} value={p} />)}</datalist>
+              <small className="muted">Centang <b>titipan</b> untuk petty cash kantor — saldonya TIDAK dihitung ke kas pribadimu, jadi tidak kecampur. Kalau 1 rekening dipakai 2 orang, buat 2 akun terpisah (cth: “Mandiri — Orang 2” + “Mandiri — Orang 3”). Saldo berjalan = saldo awal + semua transaksi. Mau benerin saldo akhir (misal beda sama m-banking)? Pakai tombol <b>🎯 Sesuaikan</b> di tiap kartu.</small>
             </div>
             <div className="panel total-kas">
               <h3>💰 Kas Pribadi: {rupiah(totalSaldo)} {totalTitipan > 0 && <span className="titipan-pill">🏢 Titipan: {rupiah(totalTitipan)} (terpisah)</span>}</h3>
@@ -694,8 +865,9 @@ export default function App() {
                     return (
                       <div key={a.id} className="bcard titipan">
                         <div className="bcard-top"><b>🏢 {a.nama}</b><span className="badge menipis">TITIPAN</span></div>
+                        {a.pemilik && <div><span className="badge transfer">👤 {a.pemilik}</span></div>}
                         <div className="akun-saldo">{rupiah(saldo)}</div>
-                        <small className="muted">Awal {rupiah(a.saldoAwal)} • pisahkan struk & catat tiap pemakaian di Transaksi</small>
+                        <small className="muted">Awal {rupiah(a.saldoAwal)} • pisahkan struk & catat tiap pemakaian di Petty Cash</small>
                         <div className="btnrow">
                           <button className="btn ghost sm" onClick={() => mulaiEditAkun(a)} title="Ubah nama / jenis / saldo awal">✏️ Edit</button>
                           <button className="btn ghost sm" onClick={() => setAkunSesuai({ id: a.id, nominal: saldo })} title="Set saldo akhir ke angka sebenarnya">🎯 Sesuaikan</button>
@@ -725,6 +897,168 @@ export default function App() {
                 <input placeholder="Catatan (opsional)" value={transferForm.catatan} onChange={(e) => setTransferForm({ ...transferForm, catatan: e.target.value })} />
                 <button className="btn primary" type="submit">Transfer</button>
               </form>
+            </div>
+          </>
+        )}
+
+        {tab === 'petty' && (
+          <>
+            <div className="cards two">
+              <div className="card out"><span>Total Pengeluaran ({pettyPeriodeLabel})</span><b className="minus">{rupiah(pettyRekap.expense)}</b><small>{pettyFiltered.filter((p) => p.tipe !== 'advance').length} pemakaian • {pettyAkunNamaTampil}</small></div>
+              <div className="card in"><span>Cash Advance • Sisa</span><b>{rupiah(pettyRekap.advance)} • <span className={pettyRekap.sisa < 0 ? 'minus' : 'plus'}>{rupiah(pettyRekap.sisa)}</span></b><small>Saldo {pettyAkunNamaTampil}: {rupiah(pettySaldoTampil)}{pettyAkunScope.length > 1 ? ` (${pettyAkunScope.map((a) => `${akunLabel(a)} ${rupiah(saldoMap[a.id] || 0)}`).join(' • ')})` : ''}</small></div>
+            </div>
+
+            <div className="panel">
+              <h3>{editPettyId ? '✏️ Edit Petty Cash' : '➕ Catat Petty Cash — langsung ke akun titipan'}</h3>
+              {accTitipan.length === 0 ? (
+                <p className="muted">Belum ada akun titipan. <button className="link" onClick={() => setTab('akun')}>Buat dulu di tab Akun (centang 🏢 titipan) →</button></p>
+              ) : (
+                <form className="petty-form" onSubmit={simpanPetty}>
+                  <div className="row2">
+                    <label>Akun titipan
+                      <select value={pettyForm.akunId || pettyAkun || accTitipanFiltered[0]?.id || accTitipan[0]?.id || ''} onChange={(e) => setPettyForm({ ...pettyForm, akunId: e.target.value })}>
+                        {(pettyPemilik ? accTitipanFiltered : accTitipan).map((a) => <option key={a.id} value={a.id}>{akunLabel(a)} ({rupiah(saldoMap[a.id] || 0)})</option>)}
+                      </select>
+                    </label>
+                    <label>Jenis
+                      <select value={pettyForm.tipe} onChange={(e) => setPettyForm({ ...pettyForm, tipe: e.target.value })}>
+                        <option value="expense">💸 Pengeluaran (belanja / amplop / bayar)</option>
+                        <option value="advance">💰 Cash advance (terima uang dari kantor)</option>
+                      </select>
+                    </label>
+                  </div>
+                  <div className="row2">
+                    <label>Tanggal<input type="date" value={pettyForm.tanggal} onChange={(e) => setPettyForm({ ...pettyForm, tanggal: e.target.value })} required /></label>
+                    <label>Jumlah (Rp)<input type="number" value={pettyForm.jumlah} onChange={(e) => setPettyForm({ ...pettyForm, jumlah: e.target.value })} placeholder="cth: 150000" required /></label>
+                  </div>
+                  <label>Keterangan / keperluan<input value={pettyForm.keterangan} onChange={(e) => setPettyForm({ ...pettyForm, keterangan: e.target.value })} placeholder="cth: beli ATK / amplop pak RT / bensin operasional" required /></label>
+                  {pettyForm.tipe === 'expense' && (
+                    <>
+                      <label className="check"><input type="checkbox" checked={!!pettyForm.tanpaNota} onChange={(e) => setPettyForm({ ...pettyForm, tanpaNota: e.target.checked })} /> ✉️ Tanpa nota (misal amplop ke orang — tetap tercatat, tanpa foto pun bisa)</label>
+                      <label>Bukti foto / nota (max 3, opsional kalau tanpa nota)
+                        <input type="file" accept="image/*" multiple onChange={onPettyFoto} />
+                      </label>
+                      {pettyBusy && <small className="muted">Mengompres foto...</small>}
+                      {pettyPhotos.length > 0 && (
+                        <div className="foto-grid">
+                          {pettyPhotos.map((ph, i) => (
+                            <div key={i} className="foto-thumb">
+                              <img src={ph} alt={`bukti ${i + 1}`} onClick={() => setPettyLightbox(ph)} />
+                              <button type="button" className="iconbtn" onClick={() => setPettyPhotos(pettyPhotos.filter((_, x) => x !== i))}>✕</button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </>
+                  )}
+                  <div className="btnrow">
+                    <button className="btn primary" type="submit" disabled={pettyBusy}>{editPettyId ? 'Simpan Perubahan' : (pettyForm.tipe === 'advance' ? 'Catat Advance' : 'Catat Pengeluaran')}</button>
+                    {editPettyId && <button className="btn ghost" type="button" onClick={resetPettyForm}>Batal</button>}
+                  </div>
+                </form>
+              )}
+              <small className="muted">Otomatis tercatat sebagai {pettyForm.tipe === 'advance' ? 'pemasukan' : 'pengeluaran'} di akun titipan → saldo titipan selalu sinkron, tidak kecampur uang pribadi.</small>
+            </div>
+
+            <div className="panel">
+              <h3>💵 Tarik Tunai / Pindah Kas — kalau ambil sebagian dari BCA</h3>
+              <p className="muted" style={{ marginTop: 0 }}>Contoh casemu: petty ada di <b>BCA Titipan</b>, kamu tarik Rp500rb ke tunai, kepakai Rp350rb. Sisanya tetap ketahuan: tunai sisa Rp150rb + sisa di BCA. Caranya: (1) tarik tunai di bawah, (2) catat pemakaian pakai akun <b>Tunai</b>.</p>
+              {accTitipan.length < 2 ? (
+                <p className="muted">Biar rapi, buat 2 akun titipan di tab Akun: <b>“BCA Petty”</b> + <b>“Tunai Petty”</b> (keduanya centang 🏢 titipan). <button className="link" onClick={() => setTab('akun')}>Buat sekarang →</button></p>
+              ) : (
+                <form className="inline-form" onSubmit={simpanTarikTunai}>
+                  <select value={pettyTarik.dari} onChange={(e) => setPettyTarik({ ...pettyTarik, dari: e.target.value })} required>
+                    <option value="">Dari...</option>
+                    {accTitipan.map((a) => <option key={a.id} value={a.id}>{akunLabel(a)} ({rupiah(saldoMap[a.id] || 0)})</option>)}
+                  </select>
+                  <span className="muted">→</span>
+                  <select value={pettyTarik.ke} onChange={(e) => setPettyTarik({ ...pettyTarik, ke: e.target.value })} required>
+                    <option value="">Ke...</option>
+                    {accTitipan.map((a) => <option key={a.id} value={a.id}>{akunLabel(a)}</option>)}
+                  </select>
+                  <input type="number" placeholder="Jumlah Rp" value={pettyTarik.jumlah} onChange={(e) => setPettyTarik({ ...pettyTarik, jumlah: e.target.value })} required />
+                  <input type="date" value={pettyTarik.tanggal} onChange={(e) => setPettyTarik({ ...pettyTarik, tanggal: e.target.value })} />
+                  <button className="btn primary" type="submit">Tarik / Pindah</button>
+                </form>
+              )}
+              <small className="muted">Tarik tunai = transfer antar titipan, <b>bukan pengeluaran</b> — jadi tidak mengurangi Sisa rekap. Pengeluaran baru berkurang saat kamu catat pemakaian dari akun Tunai. Sisa tunai = saldo akun Tunai saat ini.</small>
+              {accTitipan.length > 0 && (
+                <ul className="list" style={{ marginTop: 8 }}>
+                  {accTitipan.map((a) => <li key={a.id}><span>🏢 {akunLabel(a)}</span><b>{rupiah(saldoMap[a.id] || 0)}</b></li>)}
+                </ul>
+              )}
+            </div>
+
+            <div className="panel">
+              <h3>📑 Rekap & Download DOCX</h3>
+              <div className="inline-form">
+                <select value={pettyPemilik} onChange={(e) => { setPettyPemilik(e.target.value); setPettyAkun(''); }} title="Filter pemilik uang">
+                  <option value="">Semua pemilik</option>
+                  {daftarPemilik.map((p) => <option key={p} value={p}>👤 {p}</option>)}
+                </select>
+                <select value={pettyAkun} onChange={(e) => { setPettyAkun(e.target.value); setPettyForm((f) => ({ ...f, akunId: e.target.value || f.akunId })); }}>
+                  <option value="">Semua akun{pettyPemilik ? ` ${pettyPemilik}` : ' titipan'}</option>
+                  {accTitipanFiltered.map((a) => <option key={a.id} value={a.id}>{akunLabel(a)}</option>)}
+                </select>
+                <select value={pettyMode} onChange={(e) => setPettyMode(e.target.value)}>
+                  <option value="bulan">Periode bulan ({namaBulan(bulan)})</option>
+                  <option value="rentang">Rentang tanggal</option>
+                </select>
+                {pettyMode === 'rentang' && (
+                  <>
+                    <input type="date" value={pettyDari} onChange={(e) => setPettyDari(e.target.value)} />
+                    <span className="muted">s/d</span>
+                    <input type="date" value={pettySampai} onChange={(e) => setPettySampai(e.target.value)} />
+                  </>
+                )}
+                <input placeholder="🔍 Cari keterangan..." value={pettyCari} onChange={(e) => setPettyCari(e.target.value)} />
+                <button className="btn primary" onClick={downloadPettyDocx}>⬇ Download DOCX</button>
+              </div>
+              <ul className="list">
+                <li><span>Total Pengeluaran</span><b className="minus">{rupiah(pettyRekap.expense)}</b></li>
+                <li><span>Cash Advance</span><b className="plus">{rupiah(pettyRekap.advance)}</b></li>
+                <li><span>Sisa (Advance − Pengeluaran)</span><b>{rupiah(pettyRekap.sisa)}</b></li>
+              </ul>
+              <small className="muted">DOCX berisi: tabel rekap + total + lampiran foto yang dikelompokkan per tanggal + kolom tanda tangan.</small>
+              <div className="table-wrap">
+                <table>
+                  <thead><tr><th>Tanggal</th><th>Keterangan</th><th>Akun</th><th>Bukti</th><th style={{ textAlign: 'right' }}>Jumlah</th><th></th></tr></thead>
+                  <tbody>
+                    {pettyFiltered.map((p) => (
+                      <tr key={p.id}>
+                        <td>{p.tanggal}</td>
+                        <td>{p.tipe === 'advance' ? <span className="badge aman">ADVANCE</span> : p.tanpaNota ? <span className="badge menipis">TANPA NOTA</span> : <span className="badge transfer">NOTA</span>} {p.keterangan}</td>
+                        <td className="muted">{akunLabel(acc.find((a) => a.id === p.akunId))}</td>
+                        <td>{(p.photos?.length || 0) > 0 ? (
+                          <span className="foto-mini-row">{p.photos.map((ph, i) => <img key={i} src={ph} alt="" onClick={() => setPettyLightbox(ph)} />)}</span>
+                        ) : <span className="muted">—</span>}</td>
+                        <td style={{ textAlign: 'right' }} className={p.tipe === 'advance' ? 'plus' : 'minus'}>{p.tipe === 'advance' ? '+' : '−'}{rupiah(p.jumlah)}</td>
+                        <td><button className="iconbtn" onClick={() => mulaiEditPetty(p)}>✏️</button><button className="iconbtn" onClick={() => hapusPetty(p)}>🗑️</button></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                {pettyFiltered.length === 0 && <p className="muted center">Belum ada petty cash di periode ini.</p>}
+              </div>
+              {pettyGroups.length > 0 && (
+                <>
+                  <h4>📎 Lampiran per tanggal</h4>
+                  {pettyGroups.map(([tgl, arr]) => (
+                    <div key={tgl} className="lampiran-grup">
+                      <b>{tgl} — {arr.length} transaksi • {rupiah(arr.filter((x) => x.tipe !== 'advance').reduce((s, x) => s + Number(x.jumlah), 0))}</b>
+                      <div className="foto-grid">
+                        {arr.flatMap((p) => (p.photos || []).map((ph, i) => ({ ph, ket: p.keterangan, id: `${p.id}-${i}` }))).map(({ ph, ket, id }) => (
+                          <figure key={id} className="foto-lampiran">
+                            <img src={ph} alt={ket} onClick={() => setPettyLightbox(ph)} />
+                            <figcaption>{ket}</figcaption>
+                          </figure>
+                        ))}
+                      </div>
+                      {arr.every((p) => !(p.photos?.length) && p.tipe !== 'advance') && <small className="muted">Tidak ada foto — semua tanpa nota/amplop pada tanggal ini.</small>}
+                    </div>
+                  ))}
+                </>
+              )}
             </div>
           </>
         )}
@@ -958,7 +1292,7 @@ export default function App() {
           <div className="grid2">
             <div className="panel">
               <h3>📁 Export / Import</h3>
-              <p className="muted">Semua data (transaksi, budget, rencana, tabungan, darurat) ikut ter-backup di JSON.</p>
+              <p className="muted">Semua data (transaksi, budget, rencana, tabungan, darurat, petty cash) ikut ter-backup di JSON.</p>
               <div className="btnrow">
                 <button className="btn primary" onClick={exportCSV}>⬇ Export CSV (Excel)</button>
                 <button className="btn ghost" onClick={exportJSON}>⬇ Export JSON (backup)</button>
@@ -1081,6 +1415,15 @@ export default function App() {
           </div>
         );
       })()}
+
+      {pettyLightbox && (
+        <div className="modal-bg" onClick={() => setPettyLightbox(null)}>
+          <div className="lightbox" onClick={(e) => e.stopPropagation()}>
+            <img src={pettyLightbox} alt="bukti petty cash" />
+            <button className="btn ghost" onClick={() => setPettyLightbox(null)}>Tutup</button>
+          </div>
+        </div>
+      )}
 
       {/* bottom nav khusus HP */}
       <nav className="bottomnav">
