@@ -5,7 +5,7 @@ import {
 } from 'recharts';
 import {
   KATEGORI, rupiah, uid, bulanKey, namaBulan,
-  toCSV, download, seedData, seedAccounts, hitungSaldoAkun, JENIS_AKUN,
+  toCSV, download, hitungSaldoAkun, JENIS_AKUN,
   rekomendasiAlokasi, targetDarurat, STATUS_DARURAT,
 } from './lib/finance.js';
 import { useCloudSync } from './lib/useCloudSync.js';
@@ -20,6 +20,7 @@ const LS_EMG = 'duitku.emergency.v1';
 const LS_DEBT = 'duitku.debts.v1';
 const LS_PETTY = 'duitku.petty.v1';
 const LS_THEME = 'duitku.theme.v1';
+const LS_ONBOARDING = 'duitku.onboarding.v1';
 const COLORS = ['#123C35', '#53D6A0', '#172B4D', '#0E7A3D', '#D97706', '#0EA5A0', '#7FB69E', '#3B5A8F', '#C81E1E'];
 
 function load(key, fallback) {
@@ -30,22 +31,80 @@ function load(key, fallback) {
   } catch { return fallback; }
 }
 
+// ---- helper utang / piutang (dipakai juga saat grouping per orang) ----
+const normalDebt = (d) => ({ riwayat: [], akunId: '', ...d });
+const sisaDebt = (d) => Math.max(0, Number(d.jumlah || 0) - Number(d.terbayar || 0));
+const debtKey = (nama) => (nama || '').trim().toLowerCase();
+const tanggalHariIni = () => new Date().toISOString().slice(0, 10);
+const inisialNama = (nama) => (nama || '?').trim().split(/\s+/).slice(0, 2).map((w) => w[0]).join('').toUpperCase();
+const urutDebt = (a, b) => (sisaDebt(a) > 0 ? 0 : 1) - (sisaDebt(b) > 0 ? 0 : 1) || (b.tanggal || '').localeCompare(a.tanggal || '');
+
+function Onboarding({ onDone }) {
+  const [salary, setSalary] = useState(false);
+  const [petty, setPetty] = useState(false);
+  return (
+    <div className="onboarding">
+      <div className="onb-card">
+        <img className="onb-logo" src="logo.png" alt="Flowra" />
+        <span className="onb-kicker">Selamat datang di Flowra</span>
+        <h1>Mau pakai Flowra untuk apa?</h1>
+        <p className="muted">Pilih sesuai kebutuhanmu. Fitur yang tampil akan menyesuaikan, dan bisa diubah kapan saja di menu File.</p>
+
+        <div className="onb-options">
+          <div className="onb-option locked">
+            <span className="onb-check">✓</span>
+            <div>
+              <b>Keuangan pribadi</b>
+              <small>Catat pemasukan, pengeluaran, akun, budget, utang, tabungan, dan dana darurat.</small>
+            </div>
+            <span className="onb-tag">Wajib</span>
+          </div>
+
+          <label className={`onb-option ${salary ? 'active' : ''}`}>
+            <input type="checkbox" checked={salary} onChange={(e) => setSalary(e.target.checked)} />
+            <div>
+              <b>Catat gaji bulanan</b>
+              <small>Catat gaji tiap bulan dan dapat pengingat kalau belum dicatat.</small>
+            </div>
+          </label>
+
+          <label className={`onb-option ${petty ? 'active' : ''}`}>
+            <input type="checkbox" checked={petty} onChange={(e) => setPetty(e.target.checked)} />
+            <div>
+              <b>Petty cash / uang titipan</b>
+              <small>Pisahkan uang kantor atau titipan orang lain dari uang pribadi.</small>
+            </div>
+          </label>
+        </div>
+
+        <button className="btn primary onb-start" onClick={() => onDone({ salary, petty })}>Mulai pakai Flowra</button>
+        <small className="muted">Pilihan ini hanya mengatur fitur yang tampil. Data keuanganmu tidak terkunci.</small>
+      </div>
+    </div>
+  );
+}
+
+function ModeToggles({ profile, onChange }) {
+  return (
+    <div className="mode-toggles">
+      <label className="check"><input type="checkbox" checked disabled /> Keuangan pribadi <small className="muted">(selalu aktif)</small></label>
+      <label className="check"><input type="checkbox" checked={!!profile.salary} onChange={(e) => onChange({ salary: e.target.checked })} /> Catat gaji bulanan</label>
+      <label className="check"><input type="checkbox" checked={!!profile.petty} onChange={(e) => onChange({ petty: e.target.checked })} /> Petty cash / uang titipan</label>
+    </div>
+  );
+}
+
 export default function App() {
   const [tab, setTab] = useState('dashboard');
-  const [transactions, setTransactions] = useState(() => load(LS_TX, null));
-  const [budgets, setBudgets] = useState(() => load(LS_BD, null));
-  const [accounts, setAccounts] = useState(() => load(LS_ACC, null));
-  const [plan, setPlan] = useState(() => load(LS_PLAN, { gaji: 12000000, status: 'single', wajib: 6000000, custom: null }));
-  const [goals, setGoals] = useState(() => load(LS_GOALS, [
-    { id: 'g1', nama: 'DP Rumah', target: 50000000, terkumpul: 12000000, deadline: '' },
-    { id: 'g2', nama: 'Liburan Jepang', target: 20000000, terkumpul: 5000000, deadline: '' },
-  ]));
-  const [emg, setEmg] = useState(() => load(LS_EMG, { terkumpul: 8000000, targetManual: '' }));
-  const [debts, setDebts] = useState(() => load(LS_DEBT, [
-    { id: 'd1', tipe: 'piutang', nama: 'Andi', jumlah: 1500000, terbayar: 500000, tanggal: new Date().toISOString().slice(0, 10), jatuhTempo: '', catatan: 'Pinjam untuk servis motor' },
-    { id: 'd2', tipe: 'utang', nama: 'Kartu Kredit', jumlah: 2000000, terbayar: 0, tanggal: new Date().toISOString().slice(0, 10), jatuhTempo: '', catatan: 'Cicilan HP' },
-  ]));
-  const [petty, setPetty] = useState(() => load(LS_PETTY, []));
+  const [transactions, setTransactions] = useState(() => load(LS_TX, []) ?? []);
+  const [budgets, setBudgets] = useState(() => load(LS_BD, []) ?? []);
+  const [accounts, setAccounts] = useState(() => load(LS_ACC, []) ?? []);
+  const [plan, setPlan] = useState(() => load(LS_PLAN, { gaji: '', status: 'single', wajib: '', custom: null }) ?? { gaji: '', status: 'single', wajib: '', custom: null });
+  const [goals, setGoals] = useState(() => load(LS_GOALS, []) ?? []);
+  const [emg, setEmg] = useState(() => load(LS_EMG, { terkumpul: 0, targetManual: '' }) ?? { terkumpul: 0, targetManual: '' });
+  const [debts, setDebts] = useState(() => load(LS_DEBT, []) ?? []);
+  const [petty, setPetty] = useState(() => load(LS_PETTY, []) ?? []);
+  const [profile, setProfile] = useState(() => load(LS_ONBOARDING, null));
   const [theme, setTheme] = useState(() => {
     try {
       const saved = localStorage.getItem(LS_THEME);
@@ -59,24 +118,17 @@ export default function App() {
     document.documentElement.dataset.theme = theme;
     try { localStorage.setItem(LS_THEME, theme); } catch { /* abaikan */ }
   }, [theme]);
+
+  useEffect(() => {
+    if (profile) localStorage.setItem(LS_ONBOARDING, JSON.stringify(profile));
+  }, [profile]);
   const [bulan, setBulan] = useState(bulanKey());
   const [filterTipe, setFilterTipe] = useState('semua');
   const [cari, setCari] = useState('');
   const [showForm, setShowForm] = useState(false);
+  const [showModeModal, setShowModeModal] = useState(false);
   const [editId, setEditId] = useState(null);
   const fileRef = useRef(null);
-
-  useEffect(() => {
-    if (transactions === null || budgets === null) {
-      const s = seedData();
-      setTransactions(s.transactions);
-      setBudgets(s.budgets);
-      if (load(LS_ACC, null) === null) setAccounts(s.accounts);
-    } else if (accounts === null) {
-      setAccounts(seedAccounts());
-    }
-    // eslint-disable-next-line
-  }, []);
 
   useEffect(() => { if (transactions !== null) localStorage.setItem(LS_TX, JSON.stringify(transactions)); }, [transactions]);
   useEffect(() => { if (budgets !== null) localStorage.setItem(LS_BD, JSON.stringify(budgets)); }, [budgets]);
@@ -89,10 +141,25 @@ export default function App() {
 
   // ---- cloud sync (laptop ↔ HP data sama) ----
   const sync = useCloudSync({
-    transactions, budgets, accounts, plan, goals, emergency: emg, debts, petty,
-    setTransactions, setBudgets, setAccounts, setPlan, setGoals, setEmg, setDebts, setPetty,
+    transactions, budgets, accounts, plan, goals, emergency: emg, debts, petty, profile,
+    setTransactions, setBudgets, setAccounts, setPlan, setGoals, setEmg, setDebts, setPetty, setProfile,
   });
-  const NAV = [['dashboard', '📊', 'Home'], ['transaksi', '🧾', 'Catat'], ['akun', '💳', 'Kas'], ['petty', '🏢', 'Petty'], ['utang', '🤝', 'Utang'], ['budget', '🎯', 'Budget'], ['rencana', '🏦', 'Rencana'], ['laporan', '📁', 'File']];
+  const navItems = useMemo(() => [
+    ['dashboard', '📊', 'Home', 'Dashboard'],
+    ['transaksi', '🧾', 'Catat', 'Transaksi'],
+    ['akun', '💳', 'Kas', 'Akun & Kas'],
+    ...(profile?.salary ? [['gaji', '💼', 'Gaji', 'Gaji Bulanan']] : []),
+    ...(profile?.petty ? [['petty', '🏢', 'Petty', 'Petty Cash']] : []),
+    ['utang', '🤝', 'Utang', profile?.petty ? 'Utang & Titipan' : 'Utang & Piutang'],
+    ['budget', '🎯', 'Budget', 'Budgeting'],
+    ['rencana', '🏦', 'Rencana', 'Rencana & Tabungan'],
+    ['laporan', '📁', 'File', 'Laporan & File'],
+  ], [profile?.salary, profile?.petty]);
+
+  useEffect(() => {
+    if (tab === 'gaji' && !profile?.salary) setTab('dashboard');
+    if (tab === 'petty' && !profile?.petty) setTab('dashboard');
+  }, [tab, profile?.salary, profile?.petty]);
 
   const tx = transactions ?? [];
   const bd = budgets ?? [];
@@ -106,9 +173,48 @@ export default function App() {
   const totalSaldo = useMemo(() => accPribadi.reduce((s, a) => s + (saldoMap[a.id] || 0), 0), [accPribadi, saldoMap]);
   const totalTitipan = useMemo(() => accTitipan.reduce((s, a) => s + (saldoMap[a.id] || 0), 0), [accTitipan, saldoMap]);
   const debtList = debts ?? [];
-  const sisaDebt = (d) => Math.max(0, Number(d.jumlah) - Number(d.terbayar || 0));
   const totalPiutang = debtList.filter((d) => d.tipe === 'piutang').reduce((s, d) => s + sisaDebt(d), 0);
   const totalUtang = debtList.filter((d) => d.tipe === 'utang').reduce((s, d) => s + sisaDebt(d), 0);
+  const netDebt = totalPiutang - totalUtang;
+  const [debtFilter, setDebtFilter] = useState('semua');
+  const [cariDebt, setCariDebt] = useState('');
+
+  // Buku utang per orang: satu kartu per nama, isinya dipisah utang vs piutang.
+  const debtGroups = useMemo(() => {
+    const map = new Map();
+    debtList.forEach((raw) => {
+      const d = normalDebt(raw);
+      const key = debtKey(d.nama) || '(tanpa-nama)';
+      if (!map.has(key)) map.set(key, { key, nama: (d.nama || '').trim() || 'Tanpa nama', utang: [], piutang: [] });
+      const g = map.get(key);
+      (d.tipe === 'utang' ? g.utang : g.piutang).push(d);
+    });
+    return [...map.values()].map((g) => {
+      const semua = [...g.utang, ...g.piutang];
+      const totalUtangOrang = g.utang.reduce((s, d) => s + sisaDebt(d), 0);
+      const totalPiutangOrang = g.piutang.reduce((s, d) => s + sisaDebt(d), 0);
+      return {
+        ...g,
+        totalUtang: totalUtangOrang,
+        totalPiutang: totalPiutangOrang,
+        saldo: totalPiutangOrang - totalUtangOrang,
+        aktif: semua.filter((d) => sisaDebt(d) > 0).length,
+        jumlahCatatan: semua.length,
+        lastDate: semua.reduce((m, d) => ((d.tanggal || '') > m ? (d.tanggal || '') : m), ''),
+      };
+    }).sort((a, b) => (b.aktif > 0) - (a.aktif > 0) || b.lastDate.localeCompare(a.lastDate) || a.nama.localeCompare(b.nama));
+  }, [debts]);
+
+  const debtGroupsTampil = useMemo(() => {
+    const q = cariDebt.trim().toLowerCase();
+    return debtGroups
+      .filter((g) => !q || g.nama.toLowerCase().includes(q))
+      .filter((g) => debtFilter === 'semua' || (debtFilter === 'utang' ? g.utang.length > 0 : g.piutang.length > 0));
+  }, [debtGroups, cariDebt, debtFilter]);
+
+  const kontakUtang = debtGroups.filter((g) => g.totalUtang > 0).length;
+  const kontakPiutang = debtGroups.filter((g) => g.totalPiutang > 0).length;
+
   const jatuhDekat = useMemo(() => {
     const now = new Date(); now.setHours(0, 0, 0, 0);
     return debtList.filter((d) => {
@@ -131,6 +237,7 @@ export default function App() {
   const [debtActForm, setDebtActForm] = useState({ jumlah: '', akunId: '', tanggal: new Date().toISOString().slice(0, 10), catatan: '' });
   const [filterAkun, setFilterAkun] = useState('semua');
   const [transferForm, setTransferForm] = useState({ dari: '', ke: '', jumlah: '', tanggal: new Date().toISOString().slice(0, 10), catatan: '' });
+  const [gajiForm, setGajiForm] = useState({ jumlah: '', tanggal: new Date().toISOString().slice(0, 10), akunId: '', catatan: '' });
 
   // ---- petty cash (terintegrasi akun titipan) ----
   // p = { id, tanggal, keterangan, jumlah, tipe: 'expense'|'advance', akunId, tanpaNota, photos: [], txId }
@@ -330,6 +437,22 @@ export default function App() {
     return Math.round(sum / 3);
   }, [tx, bulan]);
 
+  // ---- gaji bulanan ----
+  const gajiTx = useMemo(() => tx.filter((t) => t.tipe === 'pemasukan' && t.kategori === 'Gaji'), [tx]);
+  const gajiBulanIni = useMemo(() => gajiTx.filter((t) => (t.tanggal || '').startsWith(bulan)), [gajiTx, bulan]);
+  const totalGajiBulanIni = gajiBulanIni.reduce((s, t) => s + Number(t.jumlah), 0);
+  const sudahGaji = gajiBulanIni.length > 0;
+  const riwayatGaji = useMemo(() => {
+    const map = {};
+    for (const t of gajiTx) {
+      const key = (t.tanggal || '').slice(0, 7);
+      if (!key) continue;
+      map[key] = (map[key] || 0) + Number(t.jumlah);
+    }
+    return Object.entries(map).map(([bulan, total]) => ({ bulan, total })).sort((a, b) => b.bulan.localeCompare(a.bulan)).slice(0, 12);
+  }, [gajiTx]);
+  const akunGaji = accPribadi.length ? accPribadi : acc;
+
   // ---- rekomendasi gaji ----
   const rek = useMemo(() => rekomendasiAlokasi(plan.gaji, plan.status), [plan.gaji, plan.status]);
   // alokasi efektif: custom (bisa disesuaikan) atau rekomendasi
@@ -415,6 +538,23 @@ export default function App() {
     setForm({ tipe: 'pengeluaran', kategori: 'Makan & Minum', jumlah: '', tanggal: new Date().toISOString().slice(0, 10), catatan: '', akunId: acc[0]?.id || '', akunTujuan: '' });
   };
 
+  const simpanGaji = (e) => {
+    e?.preventDefault();
+    const jumlah = Number(gajiForm.jumlah);
+    if (!jumlah || jumlah <= 0) return alert('Isi nominal gaji lebih dari 0');
+    const akunId = gajiForm.akunId || akunGaji[0]?.id;
+    if (!akunId) return alert('Buat akun kas dulu di tab Akun & Kas');
+    setTransactions([
+      { id: uid(), tipe: 'pemasukan', kategori: 'Gaji', jumlah, tanggal: gajiForm.tanggal, catatan: gajiForm.catatan.trim() || 'Gaji bulanan', akunId },
+      ...tx,
+    ]);
+    setPlan((p) => ({ ...p, gaji: jumlah, custom: null }));
+    setGajiForm({ jumlah: '', tanggal: new Date().toISOString().slice(0, 10), akunId: '', catatan: '' });
+    alert('Gaji berhasil dicatat');
+  };
+
+  const ubahProfil = (patch) => setProfile((p) => ({ ...(p || {}), ...patch }));
+
   const hapusTx = (id) => { if (confirm('Hapus transaksi ini?')) setTransactions(tx.filter((t) => t.id !== id)); };
   const mulaiEdit = (t) => {
     setEditId(t.id);
@@ -433,12 +573,12 @@ export default function App() {
     if (akunForm.titipan && !akunForm.pemilik.trim()) return alert('Untuk akun titipan, isi pemiliknya (cth: Orang 1 / Pak A) supaya tidak kecampur antar orang');
     if (editAkunId) {
       setAccounts(acc.map((a) => (a.id === editAkunId
-        ? { ...a, nama: akunForm.nama.trim(), jenis: akunForm.jenis, saldoAwal: Number(akunForm.saldoAwal) || 0, titipan: !!akunForm.titipan, pemilik: akunForm.pemilik.trim() }
+        ? { ...a, nama: akunForm.nama.trim(), jenis: akunForm.jenis, saldoAwal: Number(akunForm.saldoAwal) || 0, titipan: !!(profile.petty && akunForm.titipan), pemilik: profile.petty ? akunForm.pemilik.trim() : '' }
         : a)));
       resetAkunForm();
       return;
     }
-    setAccounts([...acc, { id: uid(), nama: akunForm.nama.trim(), jenis: akunForm.jenis, saldoAwal: Number(akunForm.saldoAwal) || 0, titipan: !!akunForm.titipan, pemilik: akunForm.pemilik.trim() }]);
+    setAccounts([...acc, { id: uid(), nama: akunForm.nama.trim(), jenis: akunForm.jenis, saldoAwal: Number(akunForm.saldoAwal) || 0, titipan: !!(profile.petty && akunForm.titipan), pemilik: profile.petty ? akunForm.pemilik.trim() : '' }]);
     resetAkunForm();
   };
   const mulaiEditAkun = (a) => {
@@ -483,10 +623,26 @@ export default function App() {
   // ---- CRUD utang/piutang ----
   // riwayat: [{ id, tanggal, aksi: 'awal'|'tambah'|'bayar', jumlah, akunId, catatan }]
   const debtAkunNama = (id) => (id ? (akunMap[id] || 'Akun dihapus') : '—');
-  const normalDebt = (d) => ({ riwayat: [], akunId: '', ...d });
   const resetDebtForm = () => {
-    setDebtForm({ tipe: 'piutang', nama: '', jumlah: '', tanggal: new Date().toISOString().slice(0, 10), jatuhTempo: '', catatan: '', akunId: accPribadi[0]?.id || '' });
+    setDebtForm({ tipe: 'piutang', nama: '', jumlah: '', tanggal: tanggalHariIni(), jatuhTempo: '', catatan: '', akunId: accPribadi[0]?.id || '' });
     setEditDebtId(null);
+  };
+  // Buka form baru untuk orang tertentu (dari kartu kontak / tombol "Lagi").
+  const bukaDebtBaru = (nama = '', tipe = 'piutang') => {
+    setEditDebtId(null);
+    setDetailDebtId(null);
+    setDebtForm({ tipe, nama, jumlah: '', tanggal: tanggalHariIni(), jatuhTempo: '', catatan: '', akunId: accPribadi[0]?.id || '' });
+    requestAnimationFrame(() => {
+      document.getElementById('debt-form-panel')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      document.getElementById('debt-nama')?.focus({ preventScroll: true });
+    });
+  };
+  const hapusDebt = (d) => {
+    const jenis = d.tipe === 'utang' ? 'utang' : 'piutang';
+    if (!confirm(`Hapus catatan ${jenis} ${rupiah(d.jumlah)} untuk ${d.nama}? Transaksi kas yang sudah tercatat TIDAK ikut terhapus.`)) return;
+    setDebts(debtList.filter((x) => x.id !== d.id));
+    if (detailDebtId === d.id) setDetailDebtId(null);
+    if (editDebtId === d.id) resetDebtForm();
   };
   const catatTxUtang = (d, aksi, nominal, akunId, tanggal, catatan) => {
     if (!akunId) return;
@@ -528,13 +684,19 @@ export default function App() {
     const baru = { id, tipe: debtForm.tipe, nama: debtForm.nama.trim(), jumlah: jumlahBaru, terbayar: 0, tanggal: debtForm.tanggal, jatuhTempo: debtForm.jatuhTempo, catatan: debtForm.catatan, akunId, riwayat: [entry] };
     setDebts([baru, ...debtList]);
     if (akunId) catatTxUtang(baru, 'awal', jumlahBaru, akunId, debtForm.tanggal, debtForm.tipe === 'piutang' ? `Kasih pinjam ke ${baru.nama}${debtForm.catatan ? ` — ${debtForm.catatan}` : ''}` : `Pinjam dari ${baru.nama}${debtForm.catatan ? ` — ${debtForm.catatan}` : ''}`);
+    setCariDebt('');
+    setDebtFilter('semua');
     resetDebtForm();
   };
   const mulaiEditDebt = (d) => {
     const nx = normalDebt(d);
     setEditDebtId(nx.id);
-    setDebtForm({ tipe: nx.tipe, nama: nx.nama, jumlah: nx.jumlah, tanggal: nx.tanggal || new Date().toISOString().slice(0, 10), jatuhTempo: nx.jatuhTempo || '', catatan: nx.catatan || '', akunId: nx.akunId || '' });
-    window.scrollTo({ top: 0, behavior: 'smooth' });
+    setDetailDebtId(null);
+    setDebtForm({ tipe: nx.tipe, nama: nx.nama, jumlah: nx.jumlah, tanggal: nx.tanggal || tanggalHariIni(), jatuhTempo: nx.jatuhTempo || '', catatan: nx.catatan || '', akunId: nx.akunId || '' });
+    requestAnimationFrame(() => {
+      document.getElementById('debt-form-panel')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      document.getElementById('debt-nama')?.focus({ preventScroll: true });
+    });
   };
   const bukaDebtAct = (d, mode) => {
     const nx = normalDebt(d);
@@ -571,6 +733,61 @@ export default function App() {
       catatTxUtang(d, 'bayar', nominal, debtActForm.akunId, debtActForm.tanggal, debtActForm.catatan || (d.tipe === 'piutang' ? `Pelunasan piutang ${d.nama}` : `Bayar utang ke ${d.nama}`));
     }
     setDebtAct(null);
+  };
+
+  // Satu baris catatan pinjaman (dipakai di dalam kartu per orang).
+  const renderDebtEntry = (d, tipe) => {
+    const sisa = sisaDebt(d);
+    const lunas = sisa <= 0;
+    const persen = Number(d.jumlah) > 0 ? Math.min(100, ((Number(d.terbayar) || 0) / Number(d.jumlah)) * 100) : 0;
+    const terbuka = detailDebtId === d.id;
+    const riwayat = [...(d.riwayat || [])].sort((a, b) => (b.tanggal || '').localeCompare(a.tanggal || ''));
+    return (
+      <div key={d.id} className={`debt-entry ${lunas ? 'lunas' : tipe}`}>
+        <div className="debt-entry-top">
+          <span className={`badge ${lunas ? 'aman' : tipe === 'piutang' ? 'menipis' : 'over'}`}>
+            {lunas ? '✅ Lunas' : tipe === 'piutang' ? 'Piutang' : 'Utang'}
+          </span>
+          <b>{rupiah(d.jumlah)}</b>
+        </div>
+        <div className="bar"><div className="fill" style={{ width: `${persen}%` }} /></div>
+        <small>Sisa <b>{rupiah(sisa)}</b> • terbayar {rupiah(d.terbayar || 0)} ({Math.round(persen)}%)</small>
+        <small className="muted">📅 {d.tanggal || '-'} • {d.jatuhTempo ? `⏰ tempo ${d.jatuhTempo}` : 'tanpa tempo'}</small>
+        <small className="muted">💳 {d.akunId ? debtAkunNama(d.akunId) : 'tanpa kas'}{d.catatan ? ` • ${d.catatan}` : ''}</small>
+        <div className="btnrow">
+          {!lunas && <button className="btn primary sm" onClick={() => bukaDebtAct(d, 'bayar')}>{tipe === 'piutang' ? '💰 Terima' : '💸 Bayar'}</button>}
+          {!lunas && <button className="btn ghost sm" onClick={() => bukaDebtAct(d, 'tambah')} title="Tambah pinjaman ke catatan ini">➕ Tambah</button>}
+          {lunas && <button className="btn ghost sm" onClick={() => bukaDebtBaru(d.nama, tipe)} title="Buat catatan baru untuk orang ini">➕ Lagi</button>}
+          <button className="btn ghost sm" onClick={() => setDetailDebtId(terbuka ? null : d.id)} title="Rincian">{terbuka ? '🔼' : '🧾'}</button>
+          <button className="btn ghost sm" onClick={() => mulaiEditDebt(d)} title="Edit">✏️</button>
+          <button className="btn ghost sm" onClick={() => hapusDebt(d)} title="Hapus">🗑️</button>
+        </div>
+        {terbuka && (
+          <div className="riwayat">
+            <b className="riwayat-h">Rincian {d.nama}</b>
+            {riwayat.length === 0 ? (
+              <small className="muted">Belum ada rincian (data lama sebelum fitur ini). Pembayaran baru akan tercatat di sini otomatis.</small>
+            ) : (
+              <ul className="riwayat-list">
+                {riwayat.map((r) => (
+                  <li key={r.id} className={`riwayat-row ${r.aksi}`}>
+                    <span className={`badge ${r.aksi === 'bayar' ? 'aman' : r.aksi === 'tambah' ? 'menipis' : 'transfer'}`}>
+                      {r.aksi === 'bayar' ? (tipe === 'piutang' ? '💰 diterima' : '💸 dibayar') : r.aksi === 'tambah' ? '➕ nambah' : '📌 awal'}
+                    </span>
+                    <span className="riwayat-main">
+                      <b className={r.aksi === 'bayar' ? 'plus' : 'minus'}>+{rupiah(r.jumlah)}</b>
+                      <small className="muted">{r.tanggal || '-'} • 💳 {debtAkunNama(r.akunId)}</small>
+                      {r.catatan && <small>{r.catatan}</small>}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+            <small className="muted">Total dipinjam: {rupiah(d.jumlah)} • sudah kembali/terbayar: {rupiah(d.terbayar || 0)} • sisa: {rupiah(sisa)}</small>
+          </div>
+        )}
+      </div>
+    );
   };
 
   const simpanBudget = (e) => {
@@ -623,7 +840,9 @@ export default function App() {
     return [...set].filter(Boolean).sort().reverse();
   }, [tx, bd, bulan]);
 
-  const judul = { dashboard: 'Ringkasan Keuangan', transaksi: 'Catat Transaksi', budget: 'Budgeting Bulanan', akun: 'Akun & Kas', petty: 'Petty Cash & Laporan', utang: 'Utang, Piutang & Titipan', rencana: 'Rencana, Tabungan & Dana Darurat', laporan: 'Laporan & Export' }[tab];
+  const judul = { dashboard: 'Ringkasan Keuangan', transaksi: 'Catat Transaksi', budget: 'Budgeting Bulanan', akun: 'Akun & Kas', gaji: 'Catat Gaji Bulanan', petty: 'Petty Cash & Laporan', utang: 'Utang, Piutang & Titipan', rencana: 'Rencana, Tabungan & Dana Darurat', laporan: 'Laporan & Export' }[tab];
+
+  if (!profile) return <Onboarding onDone={(p) => setProfile({ ...p, done: true })} />;
 
   if (transactions === null || accounts === null) return <div className="loading">Memuat...</div>;
 
@@ -664,10 +883,11 @@ export default function App() {
           )}
         </div>
         <nav>
-          {[['dashboard', '📊 Dashboard'], ['transaksi', '🧾 Transaksi'], ['akun', '💳 Akun & Kas'], ['petty', '🏢 Petty Cash'], ['utang', '🤝 Utang & Titipan'], ['budget', '🎯 Budgeting'], ['rencana', '🏦 Rencana & Tabungan'], ['laporan', '📁 Laporan & File']].map(([k, label]) => (
-            <button key={k} className={tab === k ? 'active' : ''} onClick={() => setTab(k)}>{label}</button>
+          {navItems.map(([k, emoji, , label]) => (
+            <button key={k} className={tab === k ? 'active' : ''} onClick={() => setTab(k)}>{emoji} {label}</button>
           ))}
         </nav>
+        <button className="btn primary sm mode-add" onClick={() => setShowModeModal(true)}>⚙️ Tambah Fitur</button>
         <div className="side-foot">
           <label>Tampilan</label>
           <div className="theme-row">
@@ -682,7 +902,7 @@ export default function App() {
           <input type="month" value={bulan} onChange={(e) => e.target.value && setBulan(e.target.value)} />
           <div className="mini-darurat">
             <small>💰 Kas pribadi: {rupiah(totalSaldo)}</small>
-            {totalTitipan > 0 && <small className="warn-text">🏢 Titipan (bukan milikmu): {rupiah(totalTitipan)}</small>}
+            {profile.petty && totalTitipan > 0 && <small className="warn-text">🏢 Titipan (bukan milikmu): {rupiah(totalTitipan)}</small>}
             {accPribadi.slice(0, 3).map((a) => (
               <small key={a.id} className="dim">{a.nama}: {rupiah(saldoMap[a.id] || 0)}</small>
             ))}
@@ -704,8 +924,11 @@ export default function App() {
           </div>
         </header>
 
-        {(alerts.length > 0 || boros || sisaKas < 0 || jatuhDekat.length > 0) && (
+        {(alerts.length > 0 || boros || sisaKas < 0 || jatuhDekat.length > 0 || (profile?.salary && !sudahGaji)) && (
           <div className="alerts">
+            {profile?.salary && !sudahGaji && (
+              <div className="alert info">💼 Gaji {namaBulan(bulan)} belum dicatat. <button className="link" onClick={() => setTab('gaji')}>Catat sekarang →</button></div>
+            )}
             {jatuhDekat.map((d) => (
               <div key={d.id} className="alert danger">⏰ <b>{d.tipe === 'piutang' ? 'Tagih' : 'Bayar'} {d.nama}!</b> Sisa {rupiah(sisaDebt(d))} • jatuh tempo {d.jatuhTempo || 'tidak ditentukan'} (≤7 hari). <button className="link" onClick={() => setTab('utang')}>Kelola →</button></div>
             ))}
@@ -729,8 +952,14 @@ export default function App() {
               <div className="card in"><span>Pemasukan</span><b>{rupiah(totalMasuk)}</b></div>
               <div className="card out"><span>Pengeluaran</span><b>{rupiah(totalKeluar)}</b></div>
               <div className="card inv"><span>Investasi</span><b>{rupiah(totalInvest)}</b></div>
-              <div className={`card sisa ${sisaKas < 0 ? 'neg' : ''}`}><span>💰 Kas Pribadi (di luar titipan)</span><b>{rupiah(totalSaldo)}</b><small>Bulan ini {rupiah(sisaKas)} • Titipan {rupiah(totalTitipan)} terpisah</small></div>
+              <div className={`card sisa ${sisaKas < 0 ? 'neg' : ''}`}><span>💰 Kas Pribadi (di luar titipan)</span><b>{rupiah(totalSaldo)}</b><small>Bulan ini {rupiah(sisaKas)}{profile.petty ? ` • Titipan ${rupiah(totalTitipan)} terpisah` : ''}</small></div>
             </div>
+            {profile?.salary && (
+              <div className="cards two">
+                <div className={`card ${sudahGaji ? 'in' : ''}`}><span>💼 Gaji {namaBulan(bulan)}</span><b>{rupiah(totalGajiBulanIni)}</b><small>{sudahGaji ? `${gajiBulanIni.length} catatan gaji bulan ini` : <>Belum dicatat • <button className="link" onClick={() => setTab('gaji')}>Catat gaji →</button></>}</small></div>
+                <div className="card"><span>🎯 Target gaji bulanan</span><b>{rupiah(plan.gaji)}</b><small><button className="link" onClick={() => setTab('gaji')}>Atur & lihat riwayat →</button></small></div>
+              </div>
+            )}
             <div className="cards two">
               <div className="card"><span>🤝 Piutang (orang hutang ke kamu)</span><b className="plus">{rupiah(totalPiutang)}</b><small>{debtList.filter((d) => d.tipe === 'piutang' && sisaDebt(d) > 0).length} aktif • <button className="link" onClick={() => setTab('utang')}>Tagih →</button></small></div>
               <div className="card"><span>💳 Utang (kamu hutang)</span><b className="minus">{rupiah(totalUtang)}</b><small>{debtList.filter((d) => d.tipe === 'utang' && sisaDebt(d) > 0).length} aktif • <button className="link" onClick={() => setTab('utang')}>Bayar →</button></small></div>
@@ -819,9 +1048,13 @@ export default function App() {
                   {Object.entries(JENIS_AKUN).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
                 </select>
                 <input type="number" placeholder="Saldo awal (Rp)" value={akunForm.saldoAwal} onChange={(e) => setAkunForm({ ...akunForm, saldoAwal: e.target.value })} title="Saldo awal — bisa diubah kapan aja via Edit" />
-                <label className="check"><input type="checkbox" checked={!!akunForm.titipan} onChange={(e) => setAkunForm({ ...akunForm, titipan: e.target.checked })} /> 🏢 Uang titipan (petty cash kantor, bukan milikku)</label>
-                {akunForm.titipan && (
-                  <input placeholder="Pemilik (cth: Orang 1 / Pak A) — wajib" value={akunForm.pemilik} onChange={(e) => setAkunForm({ ...akunForm, pemilik: e.target.value })} list="pemilik-list" />
+                {profile.petty && (
+                  <>
+                    <label className="check"><input type="checkbox" checked={!!akunForm.titipan} onChange={(e) => setAkunForm({ ...akunForm, titipan: e.target.checked })} /> 🏢 Uang titipan (petty cash kantor, bukan milikku)</label>
+                    {akunForm.titipan && (
+                      <input placeholder="Pemilik (cth: Orang 1 / Pak A) — wajib" value={akunForm.pemilik} onChange={(e) => setAkunForm({ ...akunForm, pemilik: e.target.value })} list="pemilik-list" />
+                    )}
+                  </>
                 )}
                 <button className="btn primary" type="submit">{editAkunId ? 'Simpan Perubahan' : 'Simpan Akun'}</button>
                 {editAkunId && <button className="btn ghost" type="button" onClick={resetAkunForm}>Batal</button>}
@@ -830,8 +1063,8 @@ export default function App() {
               <small className="muted">Centang <b>titipan</b> untuk petty cash kantor — saldonya TIDAK dihitung ke kas pribadimu, jadi tidak kecampur. Kalau 1 rekening dipakai 2 orang, buat 2 akun terpisah (cth: “Mandiri — Orang 2” + “Mandiri — Orang 3”). Saldo berjalan = saldo awal + semua transaksi. Mau benerin saldo akhir (misal beda sama m-banking)? Pakai tombol <b>🎯 Sesuaikan</b> di tiap kartu.</small>
             </div>
             <div className="panel total-kas">
-              <h3>💰 Kas Pribadi: {rupiah(totalSaldo)} {totalTitipan > 0 && <span className="titipan-pill">🏢 Titipan: {rupiah(totalTitipan)} (terpisah)</span>}</h3>
-              <p className="muted">{accPribadi.length} akun pribadi • {accTitipan.length} akun titipan • transfer antar akun tidak mengubah total.</p>
+              <h3>💰 Kas Pribadi: {rupiah(totalSaldo)} {profile.petty && totalTitipan > 0 && <span className="titipan-pill">🏢 Titipan: {rupiah(totalTitipan)} (terpisah)</span>}</h3>
+              <p className="muted">{accPribadi.length} akun pribadi{profile.petty ? ` • ${accTitipan.length} akun titipan` : ''} • transfer antar akun tidak mengubah total.</p>
             </div>
             <h3 className="section-h">Akun Pribadi</h3>
             <div className="budget-grid">
@@ -856,7 +1089,7 @@ export default function App() {
               })}
             </div>
             {accPribadi.length === 0 && <p className="muted">Belum ada akun pribadi.</p>}
-            {accTitipan.length > 0 && (
+            {profile.petty && accTitipan.length > 0 && (
               <>
                 <h3 className="section-h">🏢 Akun Titipan / Petty Cash (bukan uangmu — tidak masuk total pribadi)</h3>
                 <div className="budget-grid">
@@ -899,6 +1132,50 @@ export default function App() {
               </form>
             </div>
           </>
+        )}
+
+        {tab === 'gaji' && (
+          <div className="grid2">
+            <div className="panel">
+              <h3>💼 Catat Gaji {namaBulan(bulan)}</h3>
+              <p className="muted">Gaji yang dicatat di sini otomatis masuk sebagai pemasukan dan dipakai untuk rekomendasi alokasi.</p>
+              {sudahGaji ? (
+                <div className="alert info">Gaji bulan ini sudah dicatat: <b>{rupiah(totalGajiBulanIni)}</b>. Kamu tetap bisa menambah catatan gaji lain.</div>
+              ) : (
+                <div className="alert warn">Gaji {namaBulan(bulan)} belum dicatat.</div>
+              )}
+              <form className="inline-form" onSubmit={simpanGaji}>
+                <input type="number" min="0" placeholder="Nominal gaji (Rp)" value={gajiForm.jumlah} onChange={(e) => setGajiForm({ ...gajiForm, jumlah: e.target.value })} required />
+                <select value={gajiForm.akunId} onChange={(e) => setGajiForm({ ...gajiForm, akunId: e.target.value })}>
+                  <option value="">Pilih akun...</option>
+                  {akunGaji.map((a) => <option key={a.id} value={a.id}>{a.nama} ({rupiah(saldoMap[a.id] || 0)})</option>)}
+                </select>
+                <input type="date" value={gajiForm.tanggal} onChange={(e) => setGajiForm({ ...gajiForm, tanggal: e.target.value })} required />
+                <input placeholder="Catatan (opsional)" value={gajiForm.catatan} onChange={(e) => setGajiForm({ ...gajiForm, catatan: e.target.value })} />
+                <button className="btn primary" type="submit">Catat Gaji</button>
+              </form>
+              {akunGaji.length === 0 && <p className="muted">Buat akun kas dulu di tab Akun & Kas.</p>}
+              <hr />
+              <h4>Target gaji bulanan</h4>
+              <label>Gaji / pemasukan per bulan (Rp)
+                <input type="number" value={plan.gaji} onChange={(e) => setPlan({ ...plan, gaji: e.target.value, custom: null })} placeholder="cth: 12000000" />
+              </label>
+              <small className="muted">Dipakai untuk rekomendasi 50/30/20 dan target dana darurat.</small>
+            </div>
+            <div className="panel">
+              <h3>📅 Riwayat Gaji</h3>
+              <ul className="list">
+                {riwayatGaji.map((r) => <li key={r.bulan}><span>{namaBulan(r.bulan)}</span><b className="plus">{rupiah(r.total)}</b></li>)}
+              </ul>
+              {riwayatGaji.length === 0 && <p className="muted">Belum ada gaji tercatat.</p>}
+              <hr />
+              <h4>Transaksi gaji {namaBulan(bulan)}</h4>
+              <ul className="list">
+                {gajiBulanIni.map((t) => <li key={t.id}><span>{t.tanggal} • {akunMap[t.akunId] || 'Tanpa Akun'}{t.catatan ? ` • ${t.catatan}` : ''}</span><b>{rupiah(t.jumlah)}</b></li>)}
+              </ul>
+              {gajiBulanIni.length === 0 && <p className="muted">Belum ada transaksi gaji bulan ini.</p>}
+            </div>
+          </div>
         )}
 
         {tab === 'petty' && (
@@ -1065,18 +1342,27 @@ export default function App() {
 
         {tab === 'utang' && (
           <>
-            <div className="cards two">
-              <div className="card"><span>🤝 Total Piutang aktif (hakmu)</span><b className="plus">{rupiah(totalPiutang)}</b><small>Orang hutang ke kamu — jangan lupa ditagih</small></div>
-              <div className="card"><span>💳 Total Utang aktif (kewajibanmu)</span><b className="minus">{rupiah(totalUtang)}</b><small>Kamu hutang — lunasi sebelum jatuh tempo</small></div>
+            <div className="cards three">
+              <div className="card"><span>🤝 Total Piutang aktif (hakmu)</span><b className="plus">{rupiah(totalPiutang)}</b><small>{kontakPiutang} kontak • orang hutang ke kamu</small></div>
+              <div className="card"><span>💳 Total Utang aktif (kewajibanmu)</span><b className="minus">{rupiah(totalUtang)}</b><small>{kontakUtang} kontak • kamu hutang ke orang</small></div>
+              <div className="card"><span>⚖️ Posisi bersih</span><b className={netDebt > 0 ? 'plus' : netDebt < 0 ? 'minus' : ''}>{netDebt < 0 ? '−' : ''}{rupiah(Math.abs(netDebt))}</b><small>{netDebt > 0 ? 'Piutang lebih besar — kamu diuntungkan' : netDebt < 0 ? 'Utang lebih besar — masih harus dibayar' : 'Utang & piutang seimbang'}</small></div>
             </div>
-            <div className="panel">
-              <h3>{editDebtId ? '✏️ Edit Utang / Piutang' : '➕ Catat Utang / Piutang Baru'}</h3>
+
+            <div className="panel" id="debt-form-panel">
+              <h3>{editDebtId ? '✏️ Edit Catatan Utang / Piutang' : '➕ Catat Utang / Piutang Baru'}</h3>
+              <div className="debt-tipe-toggle">
+                <button type="button" className={`utang ${debtForm.tipe === 'utang' ? 'active' : ''}`} onClick={() => setDebtForm({ ...debtForm, tipe: 'utang' })}>
+                  💳 Utang <small>aku pinjam dari dia</small>
+                </button>
+                <button type="button" className={`piutang ${debtForm.tipe === 'piutang' ? 'active' : ''}`} onClick={() => setDebtForm({ ...debtForm, tipe: 'piutang' })}>
+                  🤝 Piutang <small>dia pinjam dari aku</small>
+                </button>
+              </div>
               <form className="inline-form" onSubmit={simpanDebt}>
-                <select value={debtForm.tipe} onChange={(e) => setDebtForm({ ...debtForm, tipe: e.target.value })}>
-                  <option value="piutang">🤝 Piutang — orang hutang ke aku</option>
-                  <option value="utang">💳 Utang — aku hutang ke orang</option>
-                </select>
-                <input placeholder="Nama (cth: Andi / Kas Kantor)" value={debtForm.nama} onChange={(e) => setDebtForm({ ...debtForm, nama: e.target.value })} />
+                <input id="debt-nama" list="debt-nama-list" placeholder="Nama orang (cth: Andi)" value={debtForm.nama} onChange={(e) => setDebtForm({ ...debtForm, nama: e.target.value })} />
+                <datalist id="debt-nama-list">
+                  {debtGroups.map((g) => <option key={g.key} value={g.nama} />)}
+                </datalist>
                 <input type="number" placeholder="Nominal Rp" value={debtForm.jumlah} onChange={(e) => setDebtForm({ ...debtForm, jumlah: e.target.value })} />
                 <select value={debtForm.akunId} onChange={(e) => setDebtForm({ ...debtForm, akunId: e.target.value })} title={debtForm.tipe === 'piutang' ? 'Uang keluar dari kas mana?' : 'Uang masuk ke kas mana?'}>
                   <option value="">{debtForm.tipe === 'piutang' ? '💸 Keluar dari kas... (opsional)' : '💰 Masuk ke kas... (opsional)'}</option>
@@ -1088,61 +1374,77 @@ export default function App() {
                 <button className="btn primary" type="submit">{editDebtId ? 'Simpan Perubahan' : 'Simpan'}</button>
                 {editDebtId && <button className="btn ghost" type="button" onClick={resetDebtForm}>Batal</button>}
               </form>
-              <small className="muted">{debtForm.tipe === 'piutang' ? 'Piutang: uang keluar dari kasmu (kasih pinjam) → otomatis tercatat sebagai pengeluaran.' : 'Utang: uang masuk ke kasmu (terima pinjaman) → otomatis tercatat sebagai pemasukan.'} Pilih kas supaya saldo kepotong/nambah beneran. Klik <b>Rincian</b> di kartu untuk lihat aliran uangnya.</small>
+              <small className="muted">{debtForm.tipe === 'piutang' ? '🤝 Piutang: kamu meminjamkan uang → kas keluar, orang itu berhutang ke kamu.' : '💳 Utang: kamu meminjam uang → kas masuk, kamu berhutang ke orang itu.'} Pilih kas supaya saldo ikut menyesuaikan. Nama yang sama otomatis digabung dalam satu kartu.</small>
               <br /><small className="muted">Tips petty cash: kalau kamu dipegangi kas kantor, JANGAN catat sebagai piutang — buat akun titipan di tab Akun (centang 🏢 titipan) supaya tidak kecampur uang pribadi.</small>
             </div>
-            <div className="budget-grid">
-              {debtList.map((dRaw) => {
-                const d = normalDebt(dRaw);
-                const sisa = sisaDebt(d);
-                const persen = d.jumlah > 0 ? Math.min(100, ((d.terbayar || 0) / d.jumlah) * 100) : 0;
-                const lunas = sisa <= 0;
-                const terbuka = detailDebtId === d.id;
-                const riwayat = [...(d.riwayat || [])].sort((a, b) => (b.tanggal || '').localeCompare(a.tanggal || ''));
-                return (
-                  <div key={d.id} className={`bcard ${lunas ? '' : d.tipe === 'piutang' ? 'menipis' : 'over'}`}>
-                    <div className="bcard-top"><b>{d.tipe === 'piutang' ? '🤝' : '💳'} {d.nama}</b><span className={`badge ${lunas ? 'aman' : d.tipe === 'piutang' ? 'menipis' : 'over'}`}>{lunas ? 'LUNAS' : d.tipe === 'piutang' ? 'PIUTANG' : 'UTANG'}</span></div>
-                    <div className="bar"><div className="fill" style={{ width: `${persen}%` }} /></div>
-                    <small>Sisa {rupiah(sisa)} dari {rupiah(d.jumlah)} • terbayar {rupiah(d.terbayar || 0)} ({Math.round(persen)}%)</small>
-                    <small className="muted">📅 {d.tanggal || '-'} {d.jatuhTempo ? `• ⏰ tempo ${d.jatuhTempo}` : '• tanpa tempo'}</small>
-                    <small className="muted">💳 Kas: <b>{d.akunId ? debtAkunNama(d.akunId) : 'tidak dicatat ke kas'}</b>{d.catatan ? ` • ${d.catatan}` : ''}</small>
-                    <small className="muted">🧾 {d.riwayat?.length || 0} kejadian • klik Rincian untuk buka</small>
-                    <div className="btnrow">
-                      <button className="btn ghost sm" onClick={() => setDetailDebtId(terbuka ? null : d.id)}>{terbuka ? '🔼 Tutup' : '🧾 Rincian'}</button>
-                      {!lunas && <button className="btn primary sm" onClick={() => bukaDebtAct(d, 'bayar')}>{d.tipe === 'piutang' ? '💰 Terima bayaran' : '💸 Bayar cicilan'}</button>}
-                      {!lunas && <button className="btn ghost sm" onClick={() => bukaDebtAct(d, 'tambah')} title="Orang yang sama ngutang lagi — tambahkan ke total ini">➕ Tambah</button>}
-                      <button className="btn ghost sm" onClick={() => mulaiEditDebt(d)}>✏️</button>
-                      <button className="btn ghost sm" onClick={() => { if (confirm('Hapus catatan ini? Transaksi kas yang sudah tercatat TIDAK ikut terhapus.')) setDebts(debtList.filter((x) => x.id !== d.id)); }}>🗑️</button>
+
+            <div className="debt-toolbar">
+              <div>
+                <h3 className="section-h" style={{ margin: 0 }}>📇 Buku per Orang</h3>
+                <small className="muted">{debtGroups.length} kontak • {debtList.length} catatan pinjaman</small>
+              </div>
+              <div className="debt-toolbar-actions">
+                <div className="debt-filter">
+                  {[['semua', 'Semua'], ['utang', '💳 Utang'], ['piutang', '🤝 Piutang']].map(([key, label]) => (
+                    <button key={key} type="button" className={debtFilter === key ? 'active' : ''} onClick={() => setDebtFilter(key)}>{label}</button>
+                  ))}
+                </div>
+                <input className="debt-search" placeholder="🔍 Cari nama..." value={cariDebt} onChange={(e) => setCariDebt(e.target.value)} />
+              </div>
+            </div>
+
+            <div className="debt-groups">
+              {debtGroupsTampil.map((g) => (
+                <div key={g.key} className="debt-card">
+                  <div className="debt-card-head">
+                    <div className="debt-person">
+                      <span className="debt-avatar">{inisialNama(g.nama)}</span>
+                      <div>
+                        <b>{g.nama}</b>
+                        <small className="muted">{g.jumlahCatatan} catatan • {g.aktif > 0 ? `${g.aktif} aktif` : 'semua lunas'}</small>
+                      </div>
                     </div>
-                    {terbuka && (
-                      <div className="riwayat">
-                        <b className="riwayat-h">Rincian {d.nama}</b>
-                        {riwayat.length === 0 ? (
-                          <small className="muted">Belum ada rincian (data lama sebelum fitur ini). Pembayaran baru akan tercatat di sini otomatis.</small>
-                        ) : (
-                          <ul className="riwayat-list">
-                            {riwayat.map((r) => (
-                              <li key={r.id} className={`riwayat-row ${r.aksi}`}>
-                                <span className={`badge ${r.aksi === 'bayar' ? 'aman' : r.aksi === 'tambah' ? 'menipis' : 'transfer'}`}>
-                                  {r.aksi === 'bayar' ? (d.tipe === 'piutang' ? '💰 diterima' : '💸 dibayar') : r.aksi === 'tambah' ? '➕ nambah' : '📌 awal'}
-                                </span>
-                                <span className="riwayat-main">
-                                  <b className={r.aksi === 'bayar' ? 'plus' : 'minus'}>{r.aksi === 'bayar' ? '+' : '+'}{rupiah(r.jumlah)}</b>
-                                  <small className="muted">{r.tanggal || '-'} • 💳 {debtAkunNama(r.akunId)}</small>
-                                  {r.catatan && <small>{r.catatan}</small>}
-                                </span>
-                              </li>
-                            ))}
-                          </ul>
-                        )}
-                        <small className="muted">Total dipinjam: {rupiah(d.jumlah)} • sudah kembali/terbayar: {rupiah(d.terbayar || 0)} • sisa: {rupiah(sisa)}</small>
+                    <div className="debt-net">
+                      <small>Posisi bersih</small>
+                      <b className={g.saldo > 0 ? 'plus' : g.saldo < 0 ? 'minus' : ''}>{g.saldo < 0 ? '−' : ''}{rupiah(Math.abs(g.saldo))}</b>
+                      <small className="muted">{g.saldo > 0 ? 'dia ke kamu' : g.saldo < 0 ? 'kamu ke dia' : 'seimbang'}</small>
+                    </div>
+                  </div>
+
+                  <div className={`debt-cols ${debtFilter !== 'semua' ? 'satu' : ''}`}>
+                    {debtFilter !== 'piutang' && (
+                      <div className="debt-side utang">
+                        <div className="debt-side-head"><span>💳 Utangku</span><b>{g.utang.length === 0 ? '—' : g.totalUtang > 0 ? rupiah(g.totalUtang) : 'Lunas'}</b></div>
+                        <small className="muted">Aku pinjam dari {g.nama}</small>
+                        {g.utang.length === 0
+                          ? <p className="debt-empty">Belum ada utang.</p>
+                          : [...g.utang].sort(urutDebt).map((d) => renderDebtEntry(d, 'utang'))}
+                      </div>
+                    )}
+                    {debtFilter !== 'utang' && (
+                      <div className="debt-side piutang">
+                        <div className="debt-side-head"><span>🤝 Piutangku</span><b>{g.piutang.length === 0 ? '—' : g.totalPiutang > 0 ? rupiah(g.totalPiutang) : 'Lunas'}</b></div>
+                        <small className="muted">{g.nama} pinjam dari aku</small>
+                        {g.piutang.length === 0
+                          ? <p className="debt-empty">Belum ada piutang.</p>
+                          : [...g.piutang].sort(urutDebt).map((d) => renderDebtEntry(d, 'piutang'))}
                       </div>
                     )}
                   </div>
-                );
-              })}
+
+                  <div className="debt-card-actions">
+                    <button className="btn ghost sm" onClick={() => bukaDebtBaru(g.nama, 'utang')}>💳 + Utang baru</button>
+                    <button className="btn ghost sm" onClick={() => bukaDebtBaru(g.nama, 'piutang')}>🤝 + Piutang baru</button>
+                  </div>
+                </div>
+              ))}
             </div>
-            {debtList.length === 0 && <p className="muted">Belum ada utang/piutang. Kabar baik!</p>}
+
+            {debtGroupsTampil.length === 0 && (
+              <div className="panel center">
+                <p className="muted" style={{ margin: 0 }}>{debtList.length === 0 ? 'Belum ada catatan utang/piutang. Kabar baik! 🎉' : 'Tidak ada kontak yang cocok dengan pencarian / filter.'}</p>
+              </div>
+            )}
           </>
         )}
 
@@ -1319,6 +1621,11 @@ export default function App() {
               </ul>
               {keluarPerKategori.length === 0 && <p className="muted">Belum ada data.</p>}
             </div>
+            <div className="panel mode-panel">
+              <h3>⚙️ Mode Penggunaan</h3>
+              <p className="muted">Atur fitur yang tampil. Data keuanganmu tidak hilang saat mode diubah. Saat login, pilihan mode ikut tersimpan ke akun Google.</p>
+              <ModeToggles profile={profile} onChange={ubahProfil} />
+            </div>
           </div>
         )}
       </main>
@@ -1425,11 +1732,24 @@ export default function App() {
         </div>
       )}
 
+      {showModeModal && (
+        <div className="modal-bg" onClick={() => setShowModeModal(false)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <h3>⚙️ Tambah Fitur</h3>
+            <p className="muted">Aktifkan fitur tambahan kapan saja. Data lama tidak hilang, dan pilihan ini ikut tersinkron ke akun Google saat login.</p>
+            <ModeToggles profile={profile} onChange={ubahProfil} />
+            <div className="btnrow">
+              <button className="btn primary" onClick={() => setShowModeModal(false)}>Selesai</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* bottom nav khusus HP */}
       <nav className="bottomnav">
-        {NAV.map(([k, emoji, label]) => (
+        {navItems.map(([k, emoji, short]) => (
           <button key={k} className={tab === k ? 'active' : ''} onClick={() => { setTab(k); window.scrollTo({ top: 0 }); }}>
-            <span>{emoji}</span><small>{label}</small>
+            <span>{emoji}</span><small>{short}</small>
           </button>
         ))}
       </nav>

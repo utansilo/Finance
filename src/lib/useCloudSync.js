@@ -4,9 +4,56 @@ import {
   onAuthStateChanged, getRedirectResult, userDoc, onSnapshot, setDoc, serverTimestamp,
 } from './cloud.js';
 
-// Menghubungkan 7 slice state lokal ke Firestore.
-// - Kalau belum login / belum setup Firebase: murni localStorage (mode sekarang).
-// - Kalau sudah login Google dengan akun yang SAMA di laptop & HP: data auto sinkron realtime.
+const CLOUD_HISTORY_KEY = 'duitku.cloud.v1';
+const cacheKey = (uid) => `duitku.cache.${uid}`;
+
+const emptyState = () => ({
+  transactions: [],
+  budgets: [],
+  accounts: [],
+  plan: { gaji: 0, status: 'single', wajib: 0, custom: null },
+  goals: [],
+  emergency: { terkumpul: 0, targetManual: '' },
+  debts: [],
+  petty: [],
+  profile: null,
+});
+
+const pickData = (d) => ({
+  transactions: d.transactions ?? [],
+  budgets: d.budgets ?? [],
+  accounts: d.accounts ?? [],
+  plan: d.plan ?? emptyState().plan,
+  goals: d.goals ?? [],
+  emergency: d.emergency ?? emptyState().emergency,
+  debts: d.debts ?? [],
+  petty: d.petty ?? [],
+  profile: d.profile ?? null,
+});
+
+function readCache(uid) {
+  try {
+    const raw = localStorage.getItem(cacheKey(uid));
+    return raw ? pickData(JSON.parse(raw)) : null;
+  } catch {
+    return null;
+  }
+}
+
+function hasCloudHistory() {
+  try {
+    return Boolean(localStorage.getItem(CLOUD_HISTORY_KEY));
+  } catch {
+    return false;
+  }
+}
+
+function markCloudHistory() {
+  try {
+    localStorage.setItem(CLOUD_HISTORY_KEY, '1');
+  } catch { /* abaikan */ }
+}
+
 export function useCloudSync(slices) {
   const [user, setUser] = useState(null);
   const [cloudStatus, setCloudStatus] = useState(
@@ -14,116 +61,192 @@ export function useCloudSync(slices) {
   );
   const [lastSync, setLastSync] = useState(null);
   const [authError, setAuthError] = useState('');
+
+  const slicesRef = useRef(slices);
+  slicesRef.current = slices;
   const pushing = useRef(false);
-  const firstLoad = useRef(true);
+  const hydratedUid = useRef(null);
+  const prevUid = useRef(null);
+  const lastCloudJson = useRef('');
 
-  const { transactions, budgets, accounts, plan, goals, emergency, debts, petty } = slices;
+  const dataNow = () => {
+    const s = slicesRef.current;
+    return {
+      transactions: s.transactions ?? [],
+      budgets: s.budgets ?? [],
+      accounts: s.accounts ?? [],
+      plan: s.plan ?? emptyState().plan,
+      goals: s.goals ?? [],
+      emergency: s.emergency ?? emptyState().emergency,
+      debts: s.debts ?? [],
+      petty: s.petty ?? [],
+      profile: s.profile ?? null,
+    };
+  };
 
-  // 1. dengarkan auth + selesaikan hasil redirect (khusus HP)
-  useEffect(() => {
-    if (!cloudEnabled || !auth) return;
-    setCloudStatus('mengecek login…');
-    getRedirectResult(auth)
-      .then((res) => {
-        if (res?.user) {
-          setUser(res.user);
-          setCloudStatus('tersambung ✓ sinkron');
-        }
-      })
-      .catch((e) => {
-        console.error('[auth redirect]', e);
-        setAuthError(e?.code ? `${e.code}: ${e.message}` : String(e?.message || e));
-        setCloudStatus('login gagal — lihat pesan merah');
-      });
-    const unsub = onAuthStateChanged(auth, (u) => {
-      setUser(u);
-      if (u) {
-        setAuthError('');
-        setCloudStatus('tersambung ✓ sinkron');
-      } else {
-        setCloudStatus('siap — silakan login');
-      }
-    }, (e) => {
-      console.error('[auth state]', e);
-      setAuthError(String(e?.message || e));
-    });
-    return unsub;
-  }, []);
+  const apply = (data) => {
+    const s = slicesRef.current;
+    if (s.setTransactions) s.setTransactions(data.transactions);
+    if (s.setBudgets) s.setBudgets(data.budgets);
+    if (s.setAccounts) s.setAccounts(data.accounts);
+    if (s.setPlan) s.setPlan(data.plan);
+    if (s.setGoals) s.setGoals(data.goals);
+    if (s.setEmg) s.setEmg(data.emergency);
+    if (s.setDebts) s.setDebts(data.debts);
+    if (s.setPetty) s.setPetty(data.petty);
+    if (data.profile && s.setProfile) s.setProfile(data.profile);
+  };
 
-  // 2. subscribe dokumen cloud -> timpa state lokal (laptop ↔ HP sama)
-  useEffect(() => {
-    if (!cloudEnabled || !user) return;
-    setCloudStatus('menghubungkan…');
-    const unsub = onSnapshot(
-      userDoc(user.uid),
-      (snap) => {
-        if (!snap.exists()) {
-          // Dokumen belum ada: push data lokal laptop saat ini sebagai awal (migrasi otomatis)
-          setCloudStatus('data lokal diunggah sebagai awal…');
-          pushNow();
-          return;
-        }
-        const d = snap.data();
-        // Hindari loop: jangan timpa tepat setelah kita push
-        if (pushing.current) return;
-        try {
-          pushing.current = true;
-          if (d.transactions) slices.setTransactions(d.transactions);
-          if (d.budgets) slices.setBudgets(d.budgets);
-          if (d.accounts) slices.setAccounts(d.accounts);
-          if (d.plan) slices.setPlan(d.plan);
-          if (d.goals) slices.setGoals(d.goals);
-          if (d.emergency) slices.setEmg(d.emergency);
-          if (d.debts) slices.setDebts(d.debts);
-          if (d.petty && slices.setPetty) slices.setPetty(d.petty);
-          setLastSync(new Date());
-          setCloudStatus('tersambung ✓ sinkron');
-        } finally {
-          setTimeout(() => { pushing.current = false; }, 300);
-        }
-      },
-      () => setCloudStatus('gagal membaca cloud')
-    );
-    return unsub;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user]);
-
-  // 3. tiap ada perubahan lokal -> debounce push ke cloud
-  const pushNow = async () => {
-    if (!cloudEnabled || !user) return;
+  const saveCache = (uid, data) => {
     try {
-      pushing.current = true;
-      setCloudStatus('menyimpan…');
+      localStorage.setItem(cacheKey(uid), JSON.stringify(data));
+    } catch { /* abaikan */ }
+  };
+
+  const writeCloud = async (uid, data, email) => {
+    pushing.current = true;
+    setCloudStatus('menyimpan…');
+    try {
       await setDoc(
-        userDoc(user.uid),
+        userDoc(uid),
         {
-          transactions, budgets, accounts, plan, goals,
-          emergency, debts, petty,
+          ...data,
           updatedAt: serverTimestamp(),
-          updatedBy: user.email || user.uid,
+          updatedBy: email || uid,
         },
         { merge: true }
       );
+      lastCloudJson.current = JSON.stringify(data);
+      saveCache(uid, data);
+      markCloudHistory();
       setLastSync(new Date());
       setCloudStatus('tersambung ✓ sinkron');
-      if (firstLoad.current) firstLoad.current = false;
-    } catch {
-      setCloudStatus('gagal menyimpan — cek koneksi/rules');
     } finally {
       setTimeout(() => { pushing.current = false; }, 500);
     }
   };
 
   useEffect(() => {
+    if (!cloudEnabled || !auth) return;
+    setCloudStatus('mengecek login…');
+
+    const handleUser = (u) => {
+      const uid = u?.uid || null;
+      const prev = prevUid.current;
+
+      if (prev && prev !== uid) {
+        saveCache(prev, dataNow());
+        if (uid) {
+          const cached = readCache(uid);
+          if (cached) apply(cached);
+          else apply(emptyState());
+        } else {
+          apply(emptyState());
+        }
+      }
+
+      if (prev !== uid) hydratedUid.current = null;
+      prevUid.current = uid;
+      setUser(u || null);
+
+      if (u) {
+        setAuthError('');
+        setCloudStatus('tersambung ✓ sinkron');
+      } else {
+        setCloudStatus('siap — silakan login');
+      }
+    };
+
+    getRedirectResult(auth).catch((e) => {
+      console.error('[auth redirect]', e);
+      setAuthError(e?.code ? `${e.code}: ${e.message}` : String(e?.message || e));
+      setCloudStatus('login gagal — lihat pesan merah');
+    });
+
+    const unsub = onAuthStateChanged(auth, handleUser, (e) => {
+      console.error('[auth state]', e);
+      setAuthError(String(e?.message || e));
+    });
+    return unsub;
+  }, []);
+
+  useEffect(() => {
     if (!cloudEnabled || !user) return;
-    if (firstLoad.current && !lastSync) {
-      // biarkan snapshot pertama yang menentukan (hindari overwrite saat buka HP kosong)
-      return;
+    const uid = user.uid;
+    hydratedUid.current = null;
+    setCloudStatus('menghubungkan…');
+    let cancelled = false;
+
+    const unsub = onSnapshot(
+      userDoc(uid),
+      async (snap) => {
+        if (cancelled || pushing.current) return;
+
+        if (snap.exists()) {
+          const data = pickData(snap.data());
+          apply(data);
+          saveCache(uid, data);
+          lastCloudJson.current = JSON.stringify(data);
+          hydratedUid.current = uid;
+          markCloudHistory();
+          setLastSync(new Date());
+          setCloudStatus('tersambung ✓ sinkron');
+          return;
+        }
+
+        if (snap.metadata.fromCache) return;
+
+        const existedBefore = hasCloudHistory();
+        const data = existedBefore ? emptyState() : dataNow();
+        try {
+          await writeCloud(uid, data, user.email);
+          if (cancelled) return;
+          if (existedBefore) apply(data);
+          hydratedUid.current = uid;
+          setLastSync(new Date());
+        } catch {
+          setCloudStatus('gagal memulai cloud — cek koneksi/rules');
+        }
+      },
+      () => setCloudStatus('gagal membaca cloud')
+    );
+
+    return () => {
+      cancelled = true;
+      unsub();
+    };
+  }, [user]);
+
+  const pushNow = async () => {
+    if (!cloudEnabled || !user) return;
+    if (hydratedUid.current !== user.uid) return;
+    try {
+      await writeCloud(user.uid, dataNow(), user.email);
+    } catch {
+      setCloudStatus('gagal menyimpan — cek koneksi/rules');
     }
-    const t = setTimeout(pushNow, 1200);
+  };
+
+  useEffect(() => {
+    if (!cloudEnabled || !user) return;
+    if (hydratedUid.current !== user.uid) return;
+    if (pushing.current) return;
+
+    const data = dataNow();
+    if (JSON.stringify(data) === lastCloudJson.current) return;
+
+    const t = setTimeout(async () => {
+      if (hydratedUid.current !== user.uid) return;
+      try {
+        await writeCloud(user.uid, dataNow(), user.email);
+      } catch {
+        setCloudStatus('gagal menyimpan — cek koneksi/rules');
+      }
+    }, 1200);
+
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [transactions, budgets, accounts, plan, goals, emergency, debts, petty, user]);
+  }, [slices.transactions, slices.budgets, slices.accounts, slices.plan, slices.goals, slices.emergency, slices.debts, slices.petty, slices.profile, user]);
 
   return { user, cloudStatus, lastSync, authError, loginGoogle, logoutGoogle, cloudEnabled, pushNow };
 }
